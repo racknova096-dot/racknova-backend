@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Formulario de Prueba - RackNova</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f3f3f3;
+      padding: 20px;
+    }
+    h1 {
+      color: #333;
+    }
+    form {
+      background-color: white;
+      padding: 20px;
+      border-radius: 10px;
+      max-width: 400px;
+      margin: auto;
+      box-shadow: 0px 2px 8px rgba(0,0,0,0.2);
+    }
+    input, textarea, button {
+      width: 100%;
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+      font-size: 14px;
+    }
+    button {
+      background-color: #0078D7;
+      color: white;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    button:hover {
+      background-color: #005fa3;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Agregar Producto a RackNova</h1>
+
+  <form onsubmit="agregarProducto(); return false;">
+    <label>SKU</label>
+    <input id="sku" placeholder="Ej. SKU001" required>
+
+    <label>Nombre del Producto</label>
+    <input id="nombre" placeholder="Ej. Sensor IR" required>
+
+    <label>Cantidad</label>
+    <input id="cantidad" type="number" placeholder="Ej. 15" required>
+
+    <label>Descripción</label>
+    <textarea id="descripcion" placeholder="Ej. Sensor infrarrojo para pruebas"></textarea>
+
+    <label>Rack</label>
+    <input id="rack" placeholder="Ej. R1" required>
+
+    <label>Nivel</label>
+    <input id="nivel" placeholder="Ej. N1" required>
+
+    <label>Slot</label>
+    <input id="slot" placeholder="Ej. S1" required>
+
+    <button type="submit">Agregar Producto</button>
+  </form>
+
+  <script>
+    async function agregarProducto() {
+      const data = {
+        sku: document.getElementById("sku").value,
+        nombre: document.getElementById("nombre").value,
+        cantidad: parseInt(document.getElementById("cantidad").value),
+        descripcion: document.getElementById("descripcion").value,
+        rack: document.getElementById("rack").value,
+        nivel: document.getElementById("nivel").value,
+        slot: document.getElementById("slot").value
+      };
+
+      const response = await fetch("http://127.0.0.1:8000/productos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data)
+      });
+
+      const result = await response.json();
+      console.log(result);
+      alert("✅ Producto agregado correctamente a la base de datos");
+    }
+  </script>
+
+</body>
+</html>
