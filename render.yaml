@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: racknova-backend
+    env: python
+    rootDir: FASTAPI2
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "./start.sh"
+    plan: free
+    envVars:
+      - key: DATABASE_URL
+        value: "mysql+pymysql://root:myENVgLqgvhMAazglokkDrEUELngUsJx@shortline.proxy.rlwy.net:40038/railway"

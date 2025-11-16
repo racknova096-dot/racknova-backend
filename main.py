@@ -86,7 +86,10 @@ app.add_middleware(
 #  - Puerto: 3306
 #  - Base de datos: racknova_local
 
-DATABASE_URL = "mysql+pymysql://root:myENVgLqgvhMAazglokkDrEUELngUsJx@shortline.proxy.rlwy.net:40038/railway"
+
+import os
+
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 # ----------------------------------------------------------
 # 🧱 CREACIÓN DEL MOTOR DE CONEXIÓN (ENGINE)
@@ -373,3 +376,7 @@ from auth.routes_auth import router as auth_router
 # 🔑 INTEGRAR MÓDULO DE AUTENTICACIÓN
 # ==========================================================
 app.include_router(auth_router)
+# ⬇️ SOLO SI RENDER LO NECESITA
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=10000)
