@@ -1,47 +1,32 @@
 # ==========================================================
-# 🔐 RACKNOVA — Módulo de Autenticación (JSON)
+# 🔐 RACKNOVA — Módulo de Autenticación
 # ==========================================================
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
-from sqlmodel import SQLModel, Field, Session, select, create_engine
+from sqlmodel import SQLModel, Field, Session, select
 import hashlib
 
-# ==========================================================
-# 🧱 CONEXIÓN A BASE DE DATOS
-# ==========================================================
-import os
-from sqlmodel import create_engine
-
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-if not DATABASE_URL:
-    raise Exception("❌ ERROR: No se cargó DATABASE_URL desde Render")
-
-engine = create_engine(DATABASE_URL, echo=True)
-
+# Importar el engine global desde database.py
+from database import engine, get_session
 
 # ==========================================================
 # 👤 MODELO DE USUARIO
 # ==========================================================
 class User(SQLModel, table=True):
-    id: int | None = Field(default=None, primary_key=True)  # 🔑 Clave primaria
+    id: int | None = Field(default=None, primary_key=True)
     usuario: str
     contrasena: str
-    rol: str = "user"  # Valor por defecto
+    rol: str = "user"
 
 # ==========================================================
 # 🚀 CREACIÓN DEL ROUTER
 # ==========================================================
 router = APIRouter(prefix="/auth", tags=["Autenticación"])
 
-# Crear la tabla si no existe
-@router.on_event("startup")
-def startup_event():
-    SQLModel.metadata.create_all(engine)
 
 # ==========================================================
-# 🔑 LOGIN — Validar usuario y contraseña (JSON)
+# 🔑 LOGIN — Validar usuario y contraseña
 # ==========================================================
 @router.post("/login")
 async def login(request: Request):
@@ -60,16 +45,12 @@ async def login(request: Request):
 
         password_hash = hashlib.sha256(password.encode()).hexdigest()
 
-        print("🔐 Hash ingresado:", password_hash)
-        print("🔒 Hash guardado:", user.contrasena)
-
         if password_hash != user.contrasena:
             return JSONResponse(
                 content={"success": False, "message": "Contraseña incorrecta ❌"},
                 status_code=401
             )
 
-        print("✅ Login correcto:", user.usuario)
         return JSONResponse(
             content={
                 "success": True,
@@ -78,4 +59,3 @@ async def login(request: Request):
             },
             status_code=200
         )
-# ==========================================================

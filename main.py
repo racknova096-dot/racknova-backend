@@ -12,13 +12,19 @@
 
 from fastapi import FastAPI, HTTPException, Depends  # FastAPI para crear el servidor, manejar errores y dependencias.
 from typing import Annotated, Optional, List         # Tipos de datos avanzados (útil para las anotaciones de variables y validación automática).
-from sqlmodel import SQLModel, Field, Session, create_engine, select  # Herramientas de SQLModel.
+from sqlmodel import SQLModel, Field, Session, select
 from datetime import datetime                        # Para registrar fechas de creación y actualización.
 from sqlalchemy import text                          # Permite ejecutar consultas SQL personalizadas (raw SQL).
 from fastapi.middleware.cors import CORSMiddleware
+from typing import Annotated, Optional, List
+
 #from auth.routes_auth import router as auth_router
 
 
+
+
+# 🔥 IMPORTA EL ENGINE Y LA SESIÓN DESDE database.py
+from database import engine, get_session
 
 
 # ==========================================================
@@ -87,9 +93,6 @@ app.add_middleware(
 #  - Base de datos: racknova_local
 
 
-import os
-
-DATABASE_URL = os.getenv("DATABASE_URL")
 
 # ----------------------------------------------------------
 # 🧱 CREACIÓN DEL MOTOR DE CONEXIÓN (ENGINE)
@@ -100,12 +103,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # - pool_pre_ping=True: mantiene viva la conexión evitando que se cierre por inactividad.
 # - pool_recycle=280: reinicia las conexiones cada cierto tiempo para evitar errores por tiempo muerto.
 
-engine = create_engine(
-    DATABASE_URL,
-    echo=True,
-    pool_pre_ping=True,
-    pool_recycle=280
-)
+
 
 # ----------------------------------------------------------
 # 🧩 SESIONES DE BASE DE DATOS
@@ -115,9 +113,7 @@ engine = create_engine(
 # INSERTAR, CONSULTAR, ACTUALIZAR o ELIMINAR registros.
 # FastAPI usa "dependencias" para crear y cerrar sesiones automáticamente.
 
-def get_session():
-    with Session(engine) as session:
-        yield session  # ‘yield’ devuelve la sesión mientras se ejecuta la petición
+  
 
 # Aquí definimos un tipo de dependencia para inyectar sesiones fácilmente en las rutas.
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -319,21 +315,6 @@ def eliminar_producto_por_sku(sku: str, session: SessionDep):
 
     return {"mensaje": f"✅ Producto con SKU {sku} eliminado correctamente"}
 
-
-    # Actualiza los campos con los nuevos valores
-    db_producto.sku = updated.sku
-    db_producto.cantidad = updated.cantidad
-    db_producto.descripcion = updated.descripcion
-    db_producto.nombre = updated.nombre
-    db_producto.rack = updated.rack
-    db_producto.nivel = updated.nivel
-    db_producto.slot = updated.slot
-    db_producto.ultima_actualizacion = datetime.utcnow()  # Se actualiza la fecha y hora automáticamente
-
-    # Guarda los cambios en la base de datos
-    session.commit()
-    session.refresh(db_producto)
-    return db_producto  # Devuelve el producto modificado como JSON
 
 # ==========================================================
 # ➕ REGISTRAR MOVIMIENTO (POST)
