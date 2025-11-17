@@ -10,8 +10,16 @@ import hashlib
 # ==========================================================
 # 🧱 CONEXIÓN A BASE DE DATOS
 # ==========================================================
-DATABASE_URL = "mysql+pymysql://root:@localhost:3306/racknova_local"
+import os
+from sqlmodel import create_engine
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise Exception("❌ ERROR: No se cargó DATABASE_URL desde Render")
+
 engine = create_engine(DATABASE_URL, echo=True)
+
 
 # ==========================================================
 # 👤 MODELO DE USUARIO
