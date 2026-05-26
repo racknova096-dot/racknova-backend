@@ -32,7 +32,7 @@ from database import engine, get_session
 # ==========================================================
 
 # Aquí creamos una instancia de la aplicación FastAPI.
-# Este objeto “app” es el núcleo de nuestro servidor:
+# Este objeto "app" es el núcleo de nuestro servidor:
 # - Contiene las rutas (endpoints)
 # - Maneja las solicitudes HTTP
 # - Administra los eventos de inicio y cierre del servidor
@@ -122,7 +122,7 @@ SessionDep = Annotated[Session, Depends(get_session)]
 # ==========================================================
 # 🧾 MODELO DE DATOS — TABLA PRODUCTO
 # ==========================================================
-# En SQLModel, cada clase que hereda de SQLModel con “table=True” se convierte en una tabla real en MySQL.
+# En SQLModel, cada clase que hereda de SQLModel con "table=True" se convierte en una tabla real en MySQL.
 # Esta clase define las columnas que tendrá la tabla "producto" y sus tipos de datos.
 
 class Producto(SQLModel, table=True):
@@ -172,7 +172,7 @@ class Movimiento(SQLModel, table=True):
 # 🏗️ EVENTOS DE INICIALIZACIÓN
 # ==========================================================
 # FastAPI permite ejecutar funciones automáticamente cuando la app inicia.
-# Aquí usamos el evento “startup” para crear la tabla “producto” en MySQL si aún no existe.
+# Aquí usamos el evento "startup" para crear la tabla "producto" en MySQL si aún no existe.
 
 @app.on_event("startup")
 def on_startup():
@@ -348,15 +348,12 @@ def eliminar_movimiento(id_mov: int, session: SessionDep):
 
 
 
-
-
-
-from auth.routes_auth import router as auth_router
-
 # ==========================================================
-# 🔑 INTEGRAR MÓDULO DE AUTENTICACIÓN
+# 🔑 INTEGRAR MÓDULO DE AUTENTICACIÓN (COMENTADO POR AHORA)
 # ==========================================================
-app.include_router(auth_router)
+# from auth.routes_auth import router as auth_router
+# app.include_router(auth_router)
+
 # ⬇️ SOLO SI RENDER LO NECESITA
 if __name__ == "__main__":
     import uvicorn
