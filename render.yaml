@@ -8,4 +8,4 @@ services:
     plan: free
     envVars:
       - key: DATABASE_URL
-        value: "mysql+pymysql://root:dvDBKWKxwHwlVomUwUaTGVcWzQfKDXHi@zephyr.proxy.rlwy.net:28261/railway"
+        value: "mysql+pymysql://${{MYSQLUSER}}:${{MYSQL_ROOT_PASSWORD}}@${{RAILWAY_TCP_PROXY_DOMAIN}}:${{RAILWAY_TCP_PROXY_PORT}}/${{MYSQL_DATABASE}}"
