@@ -70,7 +70,7 @@ class Producto(SQLModel, table=True):
     ultima_actualizacion: datetime = Field(default_factory=datetime.utcnow)
 
 class LoginRequest(BaseModel):
-    email: str
+    username: str
     password: str
 # ==========================================================
 # 📝 MODELO DE MOVIMIENTOS — Tabla 'movimientos'
@@ -226,12 +226,13 @@ def listar_movimientos(session: SessionDep):
 
 @app.post("/auth/login")
 def login(data: LoginRequest):
-    if data.email == "admin@racknova.com" and data.password == "admin123":
+    if data.username == "admin@racknova.com" and data.password == "admin123":
         return {
             "access_token": "racknova-demo-token",
             "token_type": "bearer",
             "user": {
-                "email": data.email,
+                "email": data.username,
+                "username": data.username,
                 "name": "Administrador RackNova",
                 "role": "admin"
             }
