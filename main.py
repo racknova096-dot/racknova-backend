@@ -4,6 +4,7 @@
 # ==========================================================
 
 # ---------- IMPORTS ----------
+from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, Depends
 from typing import Annotated, Optional, List
 from sqlmodel import SQLModel, Field, Session, select
