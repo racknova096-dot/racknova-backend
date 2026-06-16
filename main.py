@@ -68,6 +68,9 @@ class Producto(SQLModel, table=True):
     fecha_registro: datetime = Field(default_factory=datetime.utcnow)
     ultima_actualizacion: datetime = Field(default_factory=datetime.utcnow)
 
+class LoginRequest(BaseModel):
+    email: str
+    password: str
 # ==========================================================
 # 📝 MODELO DE MOVIMIENTOS — Tabla 'movimientos'
 # ==========================================================
@@ -220,6 +223,20 @@ def listar_movimientos(session: SessionDep):
         print(f"❌ List movements error: {e}")
         raise
 
+@app.post("/auth/login")
+def login(data: LoginRequest):
+    if data.email == "admin@racknova.com" and data.password == "admin123":
+        return {
+            "access_token": "racknova-demo-token",
+            "token_type": "bearer",
+            "user": {
+                "email": data.email,
+                "name": "Administrador RackNova",
+                "role": "admin"
+            }
+        }
+
+    raise HTTPException(status_code=401, detail="Credenciales incorrectas")
 
 @app.delete("/movimientos/{id_mov}")
 def eliminar_movimiento(id_mov: int, session: SessionDep):
