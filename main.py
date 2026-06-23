@@ -66,6 +66,7 @@ class Producto(SQLModel, table=True):
     rack: str
     nivel: str
     slot: str
+    costo_proveedor: float = 0
     fecha_registro: datetime = Field(default_factory=datetime.utcnow)
     ultima_actualizacion: datetime = Field(default_factory=datetime.utcnow)
 
@@ -86,7 +87,20 @@ class Movimiento(SQLModel, table=True):
     usuario: str = "Sistema"
     fecha: datetime = Field(default_factory=datetime.utcnow)
 
+    # Campos financieros nuevos
+    costo_proveedor: float = 0
+    precio_venta: float = 0
+    ingreso_total: float = 0
+    costo_total: float = 0
+    ganancia: float = 0
 
+class SalidaProducto(SQLModel):
+    cantidad_vendida: int
+    precio_venta: float
+    costo_proveedor: float = 0
+    ingreso_total: float = 0
+    costo_total: float = 0
+    ganancia: float = 0
 # ==========================================================
 # 🏗️ EVENTOS DE INICIALIZACIÓN
 # ==========================================================
@@ -177,6 +191,7 @@ def update_producto(sku: str, updated: Producto, session: SessionDep):
         db_producto.nombre = updated.nombre
         db_producto.cantidad = updated.cantidad
         db_producto.descripcion = updated.descripcion
+        db_producto.costo_proveedor = updated.costo_proveedor
         db_producto.ultima_actualizacion = datetime.now()
 
         session.commit()
@@ -202,7 +217,52 @@ def eliminar_producto_por_sku(sku: str, session: SessionDep):
     except Exception as e:
         print(f"❌ Delete product error: {e}")
         raise
+@app.post("/productos/sku/{sku}/salida")
+def registrar_salida_producto(sku: str, salida: SalidaProducto, session: SessionDep):
+    try:
+        db_producto = session.query(Producto).filter(Producto.sku == sku).first()
 
+        if not db_producto:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Producto con SKU {sku} no encontrado"
+            )
+
+        if salida.cantidad_vendida <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="La cantidad vendida debe ser mayor a 0"
+            )
+
+        if salida.cantidad_vendida > db_producto.cantidad:
+            raise HTTPException(
+                status_code=400,
+                detail="No puedes vender más cantidad de la existente"
+            )
+
+        if salida.cantidad_vendida == db_producto.cantidad:
+            session.delete(db_producto)
+        else:
+            db_producto.cantidad -= salida.cantidad_vendida
+            db_producto.ultima_actualizacion = datetime.utcnow()
+            session.add(db_producto)
+
+        session.commit()
+
+        return {
+            "mensaje": "Salida registrada correctamente",
+            "sku": sku,
+            "cantidad_vendida": salida.cantidad_vendida,
+            "precio_venta": salida.precio_venta,
+            "costo_proveedor": salida.costo_proveedor,
+            "ingreso_total": salida.ingreso_total,
+            "costo_total": salida.costo_total,
+            "ganancia": salida.ganancia,
+        }
+
+    except Exception as e:
+        print(f"❌ Error registrando salida financiera: {e}")
+        raise
 
 @app.post("/movimientos", response_model=Movimiento)
 def crear_movimiento(mov: Movimiento, session: SessionDep):
@@ -223,6 +283,54 @@ def listar_movimientos(session: SessionDep):
     except Exception as e:
         print(f"❌ List movements error: {e}")
         raise
+
+@app.get("/finanzas/resumen")
+def resumen_financiero(session: SessionDep):
+    try:
+        movimientos = session.exec(select(Movimiento)).all()
+
+        ingresos = sum(m.ingreso_total or 0 for m in movimientos)
+        costos = sum(m.costo_total or 0 for m in movimientos)
+        ganancia = sum(m.ganancia or 0 for m in movimientos)
+
+        return {
+            "ingresos": ingresos,
+            "costos": costos,
+            "ganancia": ganancia
+        }
+
+    except Exception as e:
+        print(f"❌ Error obteniendo resumen financiero: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/finanzas/grafica")
+def grafica_financiera(session: SessionDep):
+    try:
+        movimientos = session.exec(select(Movimiento)).all()
+
+        datos = {}
+
+        for m in movimientos:
+            fecha_key = m.fecha.strftime("%Y-%m-%d")
+
+            if fecha_key not in datos:
+                datos[fecha_key] = {
+                    "fecha": fecha_key,
+                    "ingresos": 0,
+                    "costos": 0,
+                    "ganancia": 0
+                }
+
+            datos[fecha_key]["ingresos"] += m.ingreso_total or 0
+            datos[fecha_key]["costos"] += m.costo_total or 0
+            datos[fecha_key]["ganancia"] += m.ganancia or 0
+
+        return list(datos.values())
+
+    except Exception as e:
+        print(f"❌ Error obteniendo gráfica financiera: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/auth/login")
 def login(data: LoginRequest):
