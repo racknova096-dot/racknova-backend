@@ -27,23 +27,14 @@ except Exception as e:
 # ==========================================================
 
 app = FastAPI(title="RackNova API 🚀")
-origins = [
-  
-    "https://racknova-dashboard.vercel.app",  # 👈 tu dominio real
-    "*"
-]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-# ---------- CORS CONFIG ----------
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://racknova-dashboard.vercel.app",
+        "http://localhost:8080",
+        "http://localhost:5173",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
