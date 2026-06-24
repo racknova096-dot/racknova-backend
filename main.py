@@ -29,7 +29,7 @@ except Exception as e:
 app = FastAPI(title="RackNova API 🚀")
 origins = [
   
-    "https://racknova-dashboard.vercel.app/",  # 👈 tu dominio real
+    "https://racknova-dashboard.vercel.app",  # 👈 tu dominio real
     "*"
 ]
 
