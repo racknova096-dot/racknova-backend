@@ -353,6 +353,34 @@ def eliminar_movimiento(id_mov: int, session: SessionDep):
         print(f"❌ Delete movement error: {e}")
         raise
 
+@app.delete("/admin/clear-all")
+def limpiar_toda_la_base(confirm: str, session: SessionDep):
+    if confirm != "BORRAR_TODO_RACKNOVA":
+        raise HTTPException(
+            status_code=400,
+            detail="Confirmación inválida. Esta acción borra toda la base de datos."
+        )
+
+    try:
+        # Primero movimientos, luego productos
+        session.exec(text("DELETE FROM movimiento"))
+        session.exec(text("DELETE FROM producto"))
+
+        # Reiniciar IDs autoincrementales
+        session.exec(text("ALTER TABLE movimiento AUTO_INCREMENT = 1"))
+        session.exec(text("ALTER TABLE producto AUTO_INCREMENT = 1"))
+
+        session.commit()
+
+        return {
+            "mensaje": "Base de datos limpiada correctamente",
+            "tablas_limpiadas": ["movimiento", "producto"]
+        }
+
+    except Exception as e:
+        session.rollback()
+        print(f"❌ Error limpiando base de datos: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
