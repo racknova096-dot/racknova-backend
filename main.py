@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, Depends
 from typing import Annotated, Optional, List
 from sqlmodel import SQLModel, Field, Session, select
-from datetime import datetime
+from datetime import datetime, date
 from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
@@ -62,8 +62,13 @@ class Producto(SQLModel, table=True):
     nivel: str
     slot: str
     costo_proveedor: float = 0
-    fecha_registro: datetime = Field(default_factory=mexico_now)
-    ultima_actualizacion: datetime = Field(default_factory=mexico_now)
+
+    # Nuevos campos
+    caducidad: Optional[date] = None
+    stock_minimo: int = 10
+
+    fecha_registro: datetime = Field(default_factory=datetime.utcnow)
+    ultima_actualizacion: datetime = Field(default_factory=datetime.utcnow)
 
 class LoginRequest(BaseModel):
     username: str
@@ -187,6 +192,7 @@ def update_producto(sku: str, updated: Producto, session: SessionDep):
         db_producto.cantidad = updated.cantidad
         db_producto.descripcion = updated.descripcion
         db_producto.costo_proveedor = updated.costo_proveedor
+        db_producto.stock_minimo = updated.stock_minimo if updated.stock_minimo is not None else 10
         db_producto.ultima_actualizacion = mexico_now()
 
         session.commit()
