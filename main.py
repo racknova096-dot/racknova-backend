@@ -280,9 +280,27 @@ def resumen_financiero(session: SessionDep):
     try:
         movimientos = session.exec(select(Movimiento)).all()
 
-        ingresos = sum(m.ingreso_total or 0 for m in movimientos)
-        costos = sum(m.costo_total or 0 for m in movimientos)
-        ganancia = sum(m.ganancia or 0 for m in movimientos)
+        # Ingresos reales por ventas/salidas
+        ingresos = sum(
+            m.ingreso_total or 0
+            for m in movimientos
+            if m.accion == "Egreso"
+        )
+
+        # Costos totales solo de productos que entraron al inventario
+        # Así una salida/venta no vuelve a aumentar los costos.
+        costos = sum(
+            m.costo_total or 0
+            for m in movimientos
+            if m.accion == "Ingreso"
+        )
+
+        # Ganancia real solo de ventas/salidas
+        ganancia = sum(
+            m.ganancia or 0
+            for m in movimientos
+            if m.accion == "Egreso"
+        )
 
         return {
             "ingresos": ingresos,
@@ -313,9 +331,12 @@ def grafica_financiera(session: SessionDep):
                     "ganancia": 0
                 }
 
-            datos[fecha_key]["ingresos"] += m.ingreso_total or 0
-            datos[fecha_key]["costos"] += m.costo_total or 0
-            datos[fecha_key]["ganancia"] += m.ganancia or 0
+            if m.accion == "Ingreso":
+                datos[fecha_key]["costos"] += m.costo_total or 0
+
+            elif m.accion == "Egreso":
+                datos[fecha_key]["ingresos"] += m.ingreso_total or 0
+                datos[fecha_key]["ganancia"] += m.ganancia or 0
 
         return list(datos.values())
 
