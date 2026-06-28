@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Depends
 from typing import Annotated, Optional, List
 from sqlmodel import SQLModel, Field, Session, select
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 import sys
@@ -21,7 +22,10 @@ except Exception as e:
     print(f"❌ ERROR importing database: {e}")
     sys.exit(1)
 
+MEXICO_TZ = ZoneInfo("America/Mexico_City")
 
+def mexico_now():
+    return datetime.now(MEXICO_TZ).replace(tzinfo=None)
 # ==========================================================
 # 🔧 CONFIGURACIÓN BASE DE LA APLICACIÓN
 # ==========================================================
@@ -58,8 +62,8 @@ class Producto(SQLModel, table=True):
     nivel: str
     slot: str
     costo_proveedor: float = 0
-    fecha_registro: datetime = Field(default_factory=datetime.utcnow)
-    ultima_actualizacion: datetime = Field(default_factory=datetime.utcnow)
+    fecha_registro: datetime = Field(default_factory=mexico_now)
+    ultima_actualizacion: datetime = Field(default_factory=mexico_now)
 
 class LoginRequest(BaseModel):
     username: str
@@ -76,7 +80,7 @@ class Movimiento(SQLModel, table=True):
     cantidad: int
     ubicacion: str
     usuario: str = "Sistema"
-    fecha: datetime = Field(default_factory=datetime.utcnow)
+    fecha: datetime = Field(default_factory=mexico_now)
 
     # Campos financieros nuevos
     costo_proveedor: float = 0
@@ -183,7 +187,7 @@ def update_producto(sku: str, updated: Producto, session: SessionDep):
         db_producto.cantidad = updated.cantidad
         db_producto.descripcion = updated.descripcion
         db_producto.costo_proveedor = updated.costo_proveedor
-        db_producto.ultima_actualizacion = datetime.now()
+        db_producto.ultima_actualizacion = mexico_now()
 
         session.commit()
         session.refresh(db_producto)
@@ -235,7 +239,7 @@ def registrar_salida_producto(sku: str, salida: SalidaProducto, session: Session
             session.delete(db_producto)
         else:
             db_producto.cantidad -= salida.cantidad_vendida
-            db_producto.ultima_actualizacion = datetime.utcnow()
+            db_producto.ultima_actualizacion = mexico_now()
             session.add(db_producto)
 
         session.commit()
