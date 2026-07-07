@@ -1,6 +1,6 @@
 # ==========================================================
-# 🚀 RACKNOVA API (LOCAL) — SISTEMA DE INVENTARIO CON FASTAPI
-# Desarrollado por Carlos Zavala
+# RACKNOVA API (LOCAL) — SISTEMA DE INVENTARIO CON FASTAPI
+# Desarrollado por Hector Jimenez RACKNOVA MX
 # ==========================================================
 
 # ---------- IMPORTS ----------
@@ -14,23 +14,28 @@ from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 import sys
 
-# 🔥 IMPORTA EL ENGINE Y LA SESIÓN DESDE database.py
+# IMPORTA EL ENGINE Y LA SESIÓN DESDE database.py
 try:
     from database import engine, get_session
+
     print("✅ Database module imported successfully")
 except Exception as e:
     print(f"❌ ERROR importing database: {e}")
     sys.exit(1)
 
+
 MEXICO_TZ = ZoneInfo("America/Mexico_City")
+
 
 def mexico_now():
     return datetime.now(MEXICO_TZ).replace(tzinfo=None)
+
+
 # ==========================================================
-# 🔧 CONFIGURACIÓN BASE DE LA APLICACIÓN
+# CONFIGURACIÓN BASE DE LA APLICACIÓN
 # ==========================================================
 
-app = FastAPI(title="RackNova API 🚀")
+app = FastAPI(title="RackNova API ")
 
 app.add_middleware(
     CORSMiddleware,
@@ -44,41 +49,47 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Aquí definimos un tipo de dependencia para inyectar sesiones fácilmente en las rutas.
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
 # ==========================================================
-# 🧾 MODELO DE DATOS — TABLA PRODUCTO
+# MODELO DE DATOS — TABLA PRODUCTO
 # ==========================================================
 
 class Producto(SQLModel, table=True):
     id_producto: Optional[int] = Field(default=None, primary_key=True)
+
     sku: str
     nombre: str
     cantidad: int = 0
     descripcion: Optional[str] = None
+
     rack: str
     nivel: str
     slot: str
-    costo_proveedor: float = 0
 
-    # Nuevos campos
+    costo_proveedor: float = 0
+    precio_venta_sugerido: float = 0
+
     caducidad: Optional[date] = None
     stock_minimo: int = 10
 
-    fecha_registro: datetime = Field(default_factory=datetime.utcnow)
-    ultima_actualizacion: datetime = Field(default_factory=datetime.utcnow)
+    fecha_registro: datetime = Field(default_factory=mexico_now)
+    ultima_actualizacion: datetime = Field(default_factory=mexico_now)
+
 
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
 # ==========================================================
-# 📝 MODELO DE MOVIMIENTOS — Tabla 'movimientos'
+# MODELO DE MOVIMIENTOS — TABLA MOVIMIENTO
 # ==========================================================
 
 class Movimiento(SQLModel, table=True):
     id_mov: Optional[int] = Field(default=None, primary_key=True)
+
     accion: str
     sku: str
     producto: str
@@ -87,12 +98,12 @@ class Movimiento(SQLModel, table=True):
     usuario: str = "Sistema"
     fecha: datetime = Field(default_factory=mexico_now)
 
-    # Campos financieros nuevos
     costo_proveedor: float = 0
     precio_venta: float = 0
     ingreso_total: float = 0
     costo_total: float = 0
     ganancia: float = 0
+
 
 class SalidaProducto(SQLModel):
     cantidad_vendida: int
@@ -101,14 +112,16 @@ class SalidaProducto(SQLModel):
     ingreso_total: float = 0
     costo_total: float = 0
     ganancia: float = 0
+
+
 # ==========================================================
-# 🏗️ EVENTOS DE INICIALIZACIÓN
+# EVENTOS DE INICIALIZACIÓN
 # ==========================================================
 
 @app.on_event("startup")
 def on_startup():
     try:
-        print("🔄 Creating database tables...")
+        print("Creating database tables...")
         SQLModel.metadata.create_all(engine)
         print("✅ Database tables created successfully")
     except Exception as e:
@@ -117,7 +130,7 @@ def on_startup():
 
 
 # ==========================================================
-# 🌐 ENDPOINTS PRINCIPALES (RUTAS HTTP)
+# ENDPOINTS PRINCIPALES
 # ==========================================================
 
 @app.get("/")
@@ -130,13 +143,18 @@ def check_db(session: SessionDep):
     try:
         result = session.exec(text("SHOW TABLES;")).all()
         tablas = [r[0] for r in result]
-        return {"conexion": "exitosa", "tablas": tablas}
+
+        return {
+            "conexion": "exitosa",
+            "tablas": tablas,
+        }
+
     except Exception as e:
         print(f"❌ Database check error: {e}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
-@app.post("/productos")
+@app.post("/productos", response_model=Producto)
 def crear_producto(producto: Producto, session: SessionDep):
     try:
         existe_sku = session.exec(
@@ -146,27 +164,38 @@ def crear_producto(producto: Producto, session: SessionDep):
         if existe_sku:
             raise HTTPException(
                 status_code=400,
-                detail=f"El SKU '{producto.sku}' ya existe."
+                detail=f"El SKU '{producto.sku}' ya existe.",
             )
 
         existe_slot = session.exec(
             select(Producto).where(
-                (Producto.rack == producto.rack) &
-                (Producto.nivel == producto.nivel) &
-                (Producto.slot == producto.slot)
+                (Producto.rack == producto.rack)
+                & (Producto.nivel == producto.nivel)
+                & (Producto.slot == producto.slot)
             )
         ).first()
 
         if existe_slot:
             raise HTTPException(
                 status_code=400,
-                detail=f"El slot {producto.rack}-{producto.nivel}-{producto.slot} ya contiene un producto."
+                detail=(
+                    f"El slot {producto.rack}-{producto.nivel}-{producto.slot} "
+                    "ya contiene un producto."
+                ),
             )
+
+        producto.costo_proveedor = producto.costo_proveedor or 0
+        producto.precio_venta_sugerido = producto.precio_venta_sugerido or 0
+        producto.stock_minimo = producto.stock_minimo or 10
+        producto.fecha_registro = mexico_now()
+        producto.ultima_actualizacion = mexico_now()
 
         session.add(producto)
         session.commit()
         session.refresh(producto)
+
         return producto
+
     except Exception as e:
         print(f"❌ Create product error: {e}")
         raise
@@ -176,6 +205,7 @@ def crear_producto(producto: Producto, session: SessionDep):
 def listar_productos(session: SessionDep):
     try:
         return session.exec(select(Producto)).all()
+
     except Exception as e:
         print(f"❌ List products error: {e}")
         raise
@@ -185,19 +215,30 @@ def listar_productos(session: SessionDep):
 def update_producto(sku: str, updated: Producto, session: SessionDep):
     try:
         db_producto = session.query(Producto).filter(Producto.sku == sku).first()
+
         if not db_producto:
             raise HTTPException(status_code=404, detail="Producto no encontrado")
 
+        db_producto.sku = updated.sku
         db_producto.nombre = updated.nombre
         db_producto.cantidad = updated.cantidad
         db_producto.descripcion = updated.descripcion
-        db_producto.costo_proveedor = updated.costo_proveedor
-        db_producto.stock_minimo = updated.stock_minimo if updated.stock_minimo is not None else 10
+        db_producto.rack = updated.rack
+        db_producto.nivel = updated.nivel
+        db_producto.slot = updated.slot
+        db_producto.costo_proveedor = updated.costo_proveedor or 0
+        db_producto.precio_venta_sugerido = updated.precio_venta_sugerido or 0
+        db_producto.caducidad = updated.caducidad
+        db_producto.stock_minimo = (
+            updated.stock_minimo if updated.stock_minimo is not None else 10
+        )
         db_producto.ultima_actualizacion = mexico_now()
 
         session.commit()
         session.refresh(db_producto)
+
         return db_producto
+
     except Exception as e:
         print(f"❌ Update product error: {e}")
         raise
@@ -209,15 +250,21 @@ def eliminar_producto_por_sku(sku: str, session: SessionDep):
         db_producto = session.query(Producto).filter(Producto.sku == sku).first()
 
         if not db_producto:
-            raise HTTPException(status_code=404, detail=f"Producto con SKU {sku} no encontrado")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Producto con SKU {sku} no encontrado",
+            )
 
         session.delete(db_producto)
         session.commit()
 
         return {"mensaje": f"✅ Producto con SKU {sku} eliminado correctamente"}
+
     except Exception as e:
         print(f"❌ Delete product error: {e}")
         raise
+
+
 @app.post("/productos/sku/{sku}/salida")
 def registrar_salida_producto(sku: str, salida: SalidaProducto, session: SessionDep):
     try:
@@ -226,26 +273,27 @@ def registrar_salida_producto(sku: str, salida: SalidaProducto, session: Session
         if not db_producto:
             raise HTTPException(
                 status_code=404,
-                detail=f"Producto con SKU {sku} no encontrado"
+                detail=f"Producto con SKU {sku} no encontrado",
             )
 
         if salida.cantidad_vendida <= 0:
             raise HTTPException(
                 status_code=400,
-                detail="La cantidad vendida debe ser mayor a 0"
+                detail="La cantidad vendida debe ser mayor a 0",
             )
 
         if salida.cantidad_vendida > db_producto.cantidad:
             raise HTTPException(
                 status_code=400,
-                detail="No puedes vender más cantidad de la existente"
+                detail="No puedes vender más cantidad de la existente",
             )
+
+        db_producto.ultima_actualizacion = mexico_now()
 
         if salida.cantidad_vendida == db_producto.cantidad:
             session.delete(db_producto)
         else:
             db_producto.cantidad -= salida.cantidad_vendida
-            db_producto.ultima_actualizacion = mexico_now()
             session.add(db_producto)
 
         session.commit()
@@ -265,13 +313,18 @@ def registrar_salida_producto(sku: str, salida: SalidaProducto, session: Session
         print(f"❌ Error registrando salida financiera: {e}")
         raise
 
+
 @app.post("/movimientos", response_model=Movimiento)
 def crear_movimiento(mov: Movimiento, session: SessionDep):
     try:
+        mov.fecha = mexico_now()
+
         session.add(mov)
         session.commit()
         session.refresh(mov)
+
         return mov
+
     except Exception as e:
         print(f"❌ Create movement error: {e}")
         raise
@@ -281,41 +334,33 @@ def crear_movimiento(mov: Movimiento, session: SessionDep):
 def listar_movimientos(session: SessionDep):
     try:
         return session.exec(select(Movimiento)).all()
+
     except Exception as e:
         print(f"❌ List movements error: {e}")
         raise
+
 
 @app.get("/finanzas/resumen")
 def resumen_financiero(session: SessionDep):
     try:
         movimientos = session.exec(select(Movimiento)).all()
 
-        # Ingresos reales por ventas/salidas
         ingresos = sum(
-            m.ingreso_total or 0
-            for m in movimientos
-            if m.accion == "Egreso"
+            m.ingreso_total or 0 for m in movimientos if m.accion == "Egreso"
         )
 
-        # Costos totales solo de productos que entraron al inventario
-        # Así una salida/venta no vuelve a aumentar los costos.
         costos = sum(
-            m.costo_total or 0
-            for m in movimientos
-            if m.accion == "Ingreso"
+            m.costo_total or 0 for m in movimientos if m.accion == "Ingreso"
         )
 
-        # Ganancia real solo de ventas/salidas
         ganancia = sum(
-            m.ganancia or 0
-            for m in movimientos
-            if m.accion == "Egreso"
+            m.ganancia or 0 for m in movimientos if m.accion == "Egreso"
         )
 
         return {
             "ingresos": ingresos,
             "costos": costos,
-            "ganancia": ganancia
+            "ganancia": ganancia,
         }
 
     except Exception as e:
@@ -327,7 +372,6 @@ def resumen_financiero(session: SessionDep):
 def grafica_financiera(session: SessionDep):
     try:
         movimientos = session.exec(select(Movimiento)).all()
-
         datos = {}
 
         for m in movimientos:
@@ -338,7 +382,7 @@ def grafica_financiera(session: SessionDep):
                     "fecha": fecha_key,
                     "ingresos": 0,
                     "costos": 0,
-                    "ganancia": 0
+                    "ganancia": 0,
                 }
 
             if m.accion == "Ingreso":
@@ -354,6 +398,7 @@ def grafica_financiera(session: SessionDep):
         print(f"❌ Error obteniendo gráfica financiera: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/auth/login")
 def login(data: LoginRequest):
     if data.username == "admin@racknova.com" and data.password == "admin123":
@@ -364,40 +409,43 @@ def login(data: LoginRequest):
                 "email": data.username,
                 "username": data.username,
                 "name": "Administrador RackNova",
-                "role": "admin"
-            }
+                "role": "admin",
+            },
         }
 
     raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+
 
 @app.delete("/movimientos/{id_mov}")
 def eliminar_movimiento(id_mov: int, session: SessionDep):
     try:
         mov = session.get(Movimiento, id_mov)
+
         if not mov:
             raise HTTPException(status_code=404, detail="Movimiento no encontrado")
 
         session.delete(mov)
         session.commit()
+
         return {"mensaje": "Movimiento eliminado"}
+
     except Exception as e:
         print(f"❌ Delete movement error: {e}")
         raise
+
 
 @app.delete("/admin/clear-all")
 def limpiar_toda_la_base(confirm: str, session: SessionDep):
     if confirm != "BORRAR_TODO_RACKNOVA":
         raise HTTPException(
             status_code=400,
-            detail="Confirmación inválida. Esta acción borra toda la base de datos."
+            detail="Confirmación inválida. Esta acción borra toda la base de datos.",
         )
 
     try:
-        # Primero movimientos, luego productos
         session.exec(text("DELETE FROM movimiento"))
         session.exec(text("DELETE FROM producto"))
 
-        # Reiniciar IDs autoincrementales
         session.exec(text("ALTER TABLE movimiento AUTO_INCREMENT = 1"))
         session.exec(text("ALTER TABLE producto AUTO_INCREMENT = 1"))
 
@@ -405,7 +453,7 @@ def limpiar_toda_la_base(confirm: str, session: SessionDep):
 
         return {
             "mensaje": "Base de datos limpiada correctamente",
-            "tablas_limpiadas": ["movimiento", "producto"]
+            "tablas_limpiadas": ["movimiento", "producto"],
         }
 
     except Exception as e:
@@ -413,6 +461,8 @@ def limpiar_toda_la_base(confirm: str, session: SessionDep):
         print(f"❌ Error limpiando base de datos: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("main:app", host="0.0.0.0", port=10000)
