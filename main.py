@@ -139,7 +139,7 @@ def calcular_dias_caducidad(caducidad_value: Optional[date]):
     if not caducidad_value:
         return None
 
-    hoy = date.today()
+    hoy = mexico_now().date()
     return (caducidad_value - hoy).days
 
 
@@ -213,7 +213,9 @@ def construir_resumen_inventario(
 
         porcentaje_vendido = 0
         if cantidad_ingresada_estimada > 0:
-            porcentaje_vendido = (cantidad_vendida / cantidad_ingresada_estimada) * 100
+            porcentaje_vendido = (
+                cantidad_vendida / cantidad_ingresada_estimada
+            ) * 100
 
         dias_caducidad = calcular_dias_caducidad(producto.caducidad)
 
@@ -273,6 +275,136 @@ def construir_resumen_inventario(
     }
 
 
+def generar_respuesta_fallback(pregunta: str, resumen: Dict[str, Any]) -> str:
+    productos = resumen.get("productos", [])
+
+    vencidos = [
+        p for p in productos
+        if p.get("dias_para_caducar") is not None
+        and p.get("dias_para_caducar") < 0
+    ]
+
+    proximos_caducar = [
+        p for p in productos
+        if p.get("dias_para_caducar") is not None
+        and 0 <= p.get("dias_para_caducar") <= 30
+    ]
+
+    stock_bajo = [
+        p for p in productos
+        if p.get("stock_actual", 0) < p.get("stock_minimo", 10)
+    ]
+
+    baja_rotacion = [
+        p for p in productos
+        if p.get("stock_actual", 0) > 0
+        and (
+            p.get("cantidad_vendida", 0) == 0
+            or p.get("porcentaje_vendido_inventario", 0) < 30
+        )
+    ]
+
+    rentables = [
+        p for p in productos
+        if p.get("margen_porcentaje", 0) >= 30
+        and p.get("ganancia_total", 0) > 0
+    ]
+
+    proximos_caducar = sorted(
+        proximos_caducar,
+        key=lambda p: p.get("dias_para_caducar", 9999),
+    )[:5]
+
+    vencidos = vencidos[:5]
+    stock_bajo = stock_bajo[:5]
+    baja_rotacion = baja_rotacion[:5]
+    rentables = sorted(
+        rentables,
+        key=lambda p: p.get("ganancia_total", 0),
+        reverse=True,
+    )[:5]
+
+    respuesta = []
+    respuesta.append("⚠️ **RackNova iA funcionó en modo automático interno.**")
+    respuesta.append("")
+    respuesta.append(
+        "El modelo externo de IA no respondió correctamente, pero RackNova generó un análisis con su motor interno de reglas usando los datos actuales del inventario."
+    )
+    respuesta.append("")
+
+    if vencidos:
+        respuesta.append("## Productos vencidos")
+        for p in vencidos:
+            respuesta.append(
+                f"- **{p.get('nombre')} ({p.get('sku')})** está vencido desde hace "
+                f"{abs(p.get('dias_para_caducar'))} día(s). "
+                f"Recomendación: retirar/eliminar del inventario y registrar merma. "
+                f"Ubicación: {p.get('ubicacion')}."
+            )
+        respuesta.append("")
+
+    if proximos_caducar:
+        respuesta.append("## Productos próximos a caducar")
+        for p in proximos_caducar:
+            dias = p.get("dias_para_caducar")
+
+            if dias <= 5:
+                descuento = 40
+            elif dias <= 10:
+                descuento = 30
+            elif dias <= 15:
+                descuento = 20
+            else:
+                descuento = 10
+
+            respuesta.append(
+                f"- **{p.get('nombre')} ({p.get('sku')})** caduca en {dias} día(s). "
+                f"Recomendación: mover a una posición visible y considerar descuento del {descuento}%. "
+                f"Stock actual: {p.get('stock_actual')} pieza(s)."
+            )
+        respuesta.append("")
+
+    if stock_bajo:
+        respuesta.append("## Productos con stock bajo")
+        for p in stock_bajo:
+            respuesta.append(
+                f"- **{p.get('nombre')} ({p.get('sku')})** tiene stock bajo. "
+                f"Actual: {p.get('stock_actual')} / mínimo: {p.get('stock_minimo')}. "
+                f"Recomendación: revisar reposición."
+            )
+        respuesta.append("")
+
+    if baja_rotacion:
+        respuesta.append("## Productos con baja rotación")
+        for p in baja_rotacion:
+            respuesta.append(
+                f"- **{p.get('nombre')} ({p.get('sku')})** tiene baja rotación. "
+                f"Porcentaje vendido del inventario estimado: "
+                f"{p.get('porcentaje_vendido_inventario', 0)}%. "
+                f"Recomendación: cambiar a una posición más visible y evaluar promoción."
+            )
+        respuesta.append("")
+
+    if rentables:
+        respuesta.append("## Productos rentables")
+        for p in rentables:
+            respuesta.append(
+                f"- **{p.get('nombre')} ({p.get('sku')})** tiene buen margen. "
+                f"Margen aproximado: {p.get('margen_porcentaje')}%. "
+                f"Ganancia acumulada: ${round(p.get('ganancia_total', 0), 2)}. "
+                f"Recomendación: mantener seguimiento y disponibilidad."
+            )
+        respuesta.append("")
+
+    if not vencidos and not proximos_caducar and not stock_bajo and not baja_rotacion and not rentables:
+        respuesta.append(
+            "No se detectaron alertas importantes con los datos actuales. "
+            "El inventario parece estable, pero se recomienda seguir registrando entradas y salidas para mejorar el análisis."
+        )
+
+    return "\n".join(respuesta)
+
+
 def llamar_deepseek(pregunta: str, resumen: Dict[str, Any]) -> str:
     api_key = os.getenv("DEEPSEEK_API_KEY")
 
@@ -303,6 +435,7 @@ Reglas estrictas:
 - Si el usuario pregunta qué comprar, prioriza stock bajo, buena venta, buen margen y buena rotación.
 - Si el usuario pregunta qué mover de lugar, prioriza productos sin venta o con baja rotación.
 - Da respuestas concretas, útiles y accionables.
+- Tu respuesta final nunca debe estar vacía.
 """
 
     user_prompt = f"""
@@ -311,6 +444,8 @@ Pregunta del usuario:
 
 Resumen del inventario en JSON:
 {json.dumps(resumen, ensure_ascii=False, default=str)}
+
+Responde con un análisis claro, en español y en formato de lista.
 """
 
     payload = {
@@ -325,8 +460,11 @@ Resumen del inventario en JSON:
                 "content": user_prompt,
             },
         ],
-        "temperature": 0.2,
-        "max_tokens": 900,
+        "thinking": {
+            "type": "disabled"
+        },
+        "temperature": 0.3,
+        "max_tokens": 1200,
     }
 
     request = urllib.request.Request(
@@ -344,7 +482,15 @@ Resumen del inventario en JSON:
             raw = response.read().decode("utf-8")
             data = json.loads(raw)
 
-        return data["choices"][0]["message"]["content"]
+        message = data.get("choices", [{}])[0].get("message", {})
+        content = message.get("content")
+
+        if content and content.strip():
+            return content.strip()
+
+        print("⚠️ DeepSeek respondió vacío. Respuesta completa:", data)
+
+        return generar_respuesta_fallback(pregunta, resumen)
 
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8")
@@ -405,12 +551,42 @@ def analizar_inventario_con_ia(data: IARequest, session: SessionDep):
 
     resumen = construir_resumen_inventario(productos, movimientos)
 
-    respuesta = llamar_deepseek(pregunta_limpia, resumen)
+    fuente = "deepseek"
+    advertencia = None
+
+    try:
+        respuesta = llamar_deepseek(pregunta_limpia, resumen)
+
+        if not respuesta or not respuesta.strip():
+            fuente = "motor_interno_fallback"
+            advertencia = (
+                "DeepSeek respondió vacío. "
+                "Se generó una respuesta con el motor interno de RackNova."
+            )
+            respuesta = generar_respuesta_fallback(pregunta_limpia, resumen)
+
+    except HTTPException as e:
+        detalle = str(e.detail)
+
+        if (
+            "Insufficient Balance" in detalle
+            or "insufficient balance" in detalle.lower()
+        ):
+            fuente = "motor_interno_fallback"
+            advertencia = (
+                "DeepSeek no tiene saldo suficiente. "
+                "Se generó una respuesta con el motor interno de RackNova."
+            )
+            respuesta = generar_respuesta_fallback(pregunta_limpia, resumen)
+        else:
+            raise e
 
     return {
         "pregunta": pregunta_limpia,
         "respuesta": respuesta,
         "modelo": os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+        "fuente": fuente,
+        "advertencia": advertencia,
         "resumen_usado": {
             "total_productos": resumen["total_productos"],
             "total_movimientos": resumen["total_movimientos"],
