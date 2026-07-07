@@ -1,23 +1,25 @@
 # ==========================================================
-# RACKNOVA API (LOCAL) — SISTEMA DE INVENTARIO CON FASTAPI
-# Desarrollado por Hector Jimenez RACKNOVA MX
+# RACKNOVA API — SISTEMA DE INVENTARIO CON FASTAPI + IA
 # ==========================================================
 
-# ---------- IMPORTS ----------
 from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, Depends
-from typing import Annotated, Optional, List
+from typing import Annotated, Optional, List, Dict, Any
 from sqlmodel import SQLModel, Field, Session, select
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 import sys
+import os
+import json
+import urllib.request
+import urllib.error
+
 
 # IMPORTA EL ENGINE Y LA SESIÓN DESDE database.py
 try:
     from database import engine, get_session
-
     print("✅ Database module imported successfully")
 except Exception as e:
     print(f"❌ ERROR importing database: {e}")
@@ -32,10 +34,10 @@ def mexico_now():
 
 
 # ==========================================================
-# CONFIGURACIÓN BASE DE LA APLICACIÓN
+# CONFIGURACIÓN BASE
 # ==========================================================
 
-app = FastAPI(title="RackNova API ")
+app = FastAPI(title="RackNova API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -53,7 +55,7 @@ SessionDep = Annotated[Session, Depends(get_session)]
 
 
 # ==========================================================
-# MODELO DE DATOS — TABLA PRODUCTO
+# MODELOS
 # ==========================================================
 
 class Producto(SQLModel, table=True):
@@ -78,15 +80,6 @@ class Producto(SQLModel, table=True):
     ultima_actualizacion: datetime = Field(default_factory=mexico_now)
 
 
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
-
-# ==========================================================
-# MODELO DE MOVIMIENTOS — TABLA MOVIMIENTO
-# ==========================================================
-
 class Movimiento(SQLModel, table=True):
     id_mov: Optional[int] = Field(default=None, primary_key=True)
 
@@ -105,6 +98,11 @@ class Movimiento(SQLModel, table=True):
     ganancia: float = 0
 
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
 class SalidaProducto(SQLModel):
     cantidad_vendida: int
     precio_venta: float
@@ -114,8 +112,12 @@ class SalidaProducto(SQLModel):
     ganancia: float = 0
 
 
+class IARequest(BaseModel):
+    pregunta: str
+
+
 # ==========================================================
-# EVENTOS DE INICIALIZACIÓN
+# STARTUP
 # ==========================================================
 
 @app.on_event("startup")
@@ -127,6 +129,240 @@ def on_startup():
     except Exception as e:
         print(f"❌ ERROR creating tables: {e}")
         sys.exit(1)
+
+
+# ==========================================================
+# UTILIDADES IA
+# ==========================================================
+
+def calcular_dias_caducidad(caducidad_value: Optional[date]):
+    if not caducidad_value:
+        return None
+
+    hoy = date.today()
+    return (caducidad_value - hoy).days
+
+
+def construir_resumen_inventario(
+    productos: List[Producto],
+    movimientos: List[Movimiento],
+) -> Dict[str, Any]:
+    ventas_por_sku: Dict[str, Dict[str, Any]] = {}
+    ingresos_por_sku: Dict[str, Dict[str, Any]] = {}
+
+    for mov in movimientos:
+        sku = mov.sku
+
+        if mov.accion == "Egreso":
+            if sku not in ventas_por_sku:
+                ventas_por_sku[sku] = {
+                    "sku": sku,
+                    "producto": mov.producto,
+                    "cantidad_vendida": 0,
+                    "ingreso_total": 0,
+                    "costo_total": 0,
+                    "ganancia_total": 0,
+                    "ultima_venta": None,
+                }
+
+            ventas_por_sku[sku]["cantidad_vendida"] += mov.cantidad or 0
+            ventas_por_sku[sku]["ingreso_total"] += mov.ingreso_total or 0
+            ventas_por_sku[sku]["costo_total"] += mov.costo_total or 0
+            ventas_por_sku[sku]["ganancia_total"] += mov.ganancia or 0
+
+            if (
+                ventas_por_sku[sku]["ultima_venta"] is None
+                or mov.fecha > ventas_por_sku[sku]["ultima_venta"]
+            ):
+                ventas_por_sku[sku]["ultima_venta"] = mov.fecha
+
+        if mov.accion == "Ingreso":
+            if sku not in ingresos_por_sku:
+                ingresos_por_sku[sku] = {
+                    "sku": sku,
+                    "producto": mov.producto,
+                    "cantidad_ingresada": 0,
+                    "costo_total_ingresado": 0,
+                    "ultima_entrada": None,
+                }
+
+            ingresos_por_sku[sku]["cantidad_ingresada"] += mov.cantidad or 0
+            ingresos_por_sku[sku]["costo_total_ingresado"] += mov.costo_total or 0
+
+            if (
+                ingresos_por_sku[sku]["ultima_entrada"] is None
+                or mov.fecha > ingresos_por_sku[sku]["ultima_entrada"]
+            ):
+                ingresos_por_sku[sku]["ultima_entrada"] = mov.fecha
+
+    productos_resumen = []
+
+    for producto in productos:
+        venta = ventas_por_sku.get(producto.sku, {})
+        ingreso = ingresos_por_sku.get(producto.sku, {})
+
+        cantidad_vendida = venta.get("cantidad_vendida", 0)
+        ingreso_total = venta.get("ingreso_total", 0)
+        ganancia_total = venta.get("ganancia_total", 0)
+
+        margen = 0
+        if ingreso_total > 0:
+            margen = (ganancia_total / ingreso_total) * 100
+
+        cantidad_ingresada_estimada = producto.cantidad + cantidad_vendida
+
+        porcentaje_vendido = 0
+        if cantidad_ingresada_estimada > 0:
+            porcentaje_vendido = (cantidad_vendida / cantidad_ingresada_estimada) * 100
+
+        dias_caducidad = calcular_dias_caducidad(producto.caducidad)
+
+        productos_resumen.append(
+            {
+                "sku": producto.sku,
+                "nombre": producto.nombre,
+                "stock_actual": producto.cantidad,
+                "stock_minimo": producto.stock_minimo,
+                "ubicacion": f"{producto.rack}-{producto.nivel}-{producto.slot}",
+                "costo_proveedor": producto.costo_proveedor,
+                "precio_venta_sugerido": producto.precio_venta_sugerido,
+                "caducidad": str(producto.caducidad) if producto.caducidad else None,
+                "dias_para_caducar": dias_caducidad,
+                "cantidad_vendida": cantidad_vendida,
+                "cantidad_ingresada_estimada": cantidad_ingresada_estimada,
+                "porcentaje_vendido_inventario": round(porcentaje_vendido, 2),
+                "ingreso_total": ingreso_total,
+                "ganancia_total": ganancia_total,
+                "margen_porcentaje": round(margen, 2),
+                "ultima_venta": str(venta.get("ultima_venta"))
+                if venta.get("ultima_venta")
+                else None,
+                "ultima_entrada": str(ingreso.get("ultima_entrada"))
+                if ingreso.get("ultima_entrada")
+                else None,
+            }
+        )
+
+    movimientos_recientes = sorted(
+        movimientos,
+        key=lambda m: m.fecha,
+        reverse=True,
+    )[:40]
+
+    return {
+        "fecha_analisis": str(mexico_now()),
+        "total_productos": len(productos),
+        "total_movimientos": len(movimientos),
+        "productos": productos_resumen[:80],
+        "ventas_por_sku": list(ventas_por_sku.values())[:80],
+        "movimientos_recientes": [
+            {
+                "accion": m.accion,
+                "sku": m.sku,
+                "producto": m.producto,
+                "cantidad": m.cantidad,
+                "ubicacion": m.ubicacion,
+                "fecha": str(m.fecha),
+                "precio_venta": m.precio_venta,
+                "ingreso_total": m.ingreso_total,
+                "costo_total": m.costo_total,
+                "ganancia": m.ganancia,
+            }
+            for m in movimientos_recientes
+        ],
+    }
+
+
+def llamar_deepseek(pregunta: str, resumen: Dict[str, Any]) -> str:
+    api_key = os.getenv("DEEPSEEK_API_KEY")
+
+    if not api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="Falta configurar DEEPSEEK_API_KEY en Render.",
+        )
+
+    model = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+
+    system_prompt = """
+Eres RackNova iA, un asistente experto en inventarios, almacenes, caducidad,
+rotación, descuentos, rentabilidad y decisiones de compra.
+
+Reglas estrictas:
+- Responde siempre en español.
+- Usa únicamente los datos enviados en el resumen del inventario.
+- No inventes productos, precios, ventas ni cantidades.
+- Si falta información, dilo claramente.
+- No digas que tienes acceso directo a la base de datos.
+- No recomiendes descuento para productos vencidos; para vencidos recomienda retirar, eliminar o registrar merma.
+- Para productos próximos a caducar, puedes sugerir descuento:
+  1 a 5 días = 40%
+  6 a 10 días = 30%
+  11 a 15 días = 20%
+  16 a 30 días = 10%
+- Si el usuario pregunta qué comprar, prioriza stock bajo, buena venta, buen margen y buena rotación.
+- Si el usuario pregunta qué mover de lugar, prioriza productos sin venta o con baja rotación.
+- Da respuestas concretas, útiles y accionables.
+"""
+
+    user_prompt = f"""
+Pregunta del usuario:
+{pregunta}
+
+Resumen del inventario en JSON:
+{json.dumps(resumen, ensure_ascii=False, default=str)}
+"""
+
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": system_prompt,
+            },
+            {
+                "role": "user",
+                "content": user_prompt,
+            },
+        ],
+        "temperature": 0.2,
+        "max_tokens": 900,
+    }
+
+    request = urllib.request.Request(
+        "https://api.deepseek.com/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            raw = response.read().decode("utf-8")
+            data = json.loads(raw)
+
+        return data["choices"][0]["message"]["content"]
+
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+
+        print("❌ Error DeepSeek:", e.code, error_body)
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error llamando DeepSeek: {error_body}",
+        )
+
+    except Exception as e:
+        print("❌ Error IA:", e)
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error general de IA: {str(e)}",
+        )
 
 
 # ==========================================================
@@ -152,6 +388,36 @@ def check_db(session: SessionDep):
     except Exception as e:
         print(f"❌ Database check error: {e}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@app.post("/ia/inventario")
+def analizar_inventario_con_ia(data: IARequest, session: SessionDep):
+    pregunta_limpia = data.pregunta.strip()
+
+    if not pregunta_limpia:
+        raise HTTPException(
+            status_code=400,
+            detail="La pregunta no puede estar vacía.",
+        )
+
+    productos = session.exec(select(Producto)).all()
+    movimientos = session.exec(select(Movimiento)).all()
+
+    resumen = construir_resumen_inventario(productos, movimientos)
+
+    respuesta = llamar_deepseek(pregunta_limpia, resumen)
+
+    return {
+        "pregunta": pregunta_limpia,
+        "respuesta": respuesta,
+        "modelo": os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+        "resumen_usado": {
+            "total_productos": resumen["total_productos"],
+            "total_movimientos": resumen["total_movimientos"],
+            "productos_enviados": len(resumen["productos"]),
+            "movimientos_recientes_enviados": len(resumen["movimientos_recientes"]),
+        },
+    }
 
 
 @app.post("/productos", response_model=Producto)
