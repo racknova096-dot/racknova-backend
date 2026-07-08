@@ -416,8 +416,8 @@ def llamar_deepseek(pregunta: str, resumen: Dict[str, Any]) -> str:
 
     model = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
-    system_prompt = """
-Eres RackNova iA, un asistente experto en inventarios, almacenes, caducidad,
+   system_prompt = """
+Eres RACKNOVA IA, un asistente experto en inventarios, almacenes, caducidad,
 rotación, descuentos, rentabilidad y decisiones de compra.
 
 Reglas estrictas:
@@ -434,7 +434,10 @@ Reglas estrictas:
   16 a 30 días = 10%
 - Si el usuario pregunta qué comprar, prioriza stock bajo, buena venta, buen margen y buena rotación.
 - Si el usuario pregunta qué mover de lugar, prioriza productos sin venta o con baja rotación.
-- Da respuestas concretas, útiles y accionables.
+- Responde como asesor ejecutivo, no como reporte técnico largo.
+- No uses demasiadas viñetas.
+- No uses asteriscos de Markdown como **texto** o *viñetas*.
+- Termina con una recomendación concreta.
 - Tu respuesta final nunca debe estar vacía.
 """
 
