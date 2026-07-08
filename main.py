@@ -18,9 +18,13 @@ import urllib.request
 import urllib.error
 
 
-# IMPORTA EL ENGINE Y LA SESIÓN DESDE database.py
+# ==========================================================
+# DATABASE
+# ==========================================================
+
 try:
     from database import engine, get_session
+
     print("✅ Database module imported successfully")
 except Exception as e:
     print(f"❌ ERROR importing database: {e}")
@@ -38,10 +42,17 @@ def normalizar_texto(value: Optional[str]) -> str:
     return (value or "").strip()
 
 
-def normalizar_stock_alto(stock_minimo: Optional[int], stock_alto: Optional[int]) -> int:
-    minimo = stock_minimo if stock_minimo and stock_minimo > 0 else 10
+def normalizar_stock_minimo(stock_minimo: Optional[int]) -> int:
+    if stock_minimo and stock_minimo > 0:
+        return stock_minimo
 
-    if stock_alto and stock_alto > 0:
+    return 10
+
+
+def normalizar_stock_alto(stock_minimo: Optional[int], stock_alto: Optional[int]) -> int:
+    minimo = normalizar_stock_minimo(stock_minimo)
+
+    if stock_alto and stock_alto > minimo:
         return stock_alto
 
     return minimo * 3
@@ -113,6 +124,8 @@ class ProductoCatalogo(SQLModel, table=True):
     stock_alto: int = 30
 
     total_ingresado: int = 0
+    total_vendido: int = 0
+
     fecha_creacion: datetime = Field(default_factory=mexico_now)
     ultima_actualizacion: datetime = Field(default_factory=mexico_now)
 
@@ -166,30 +179,93 @@ def obtener_columnas(session: Session, tabla: str) -> List[str]:
         return []
 
 
-def agregar_columna_si_falta(session: Session, tabla: str, columna: str, definicion_sql: str):
+def agregar_columna_si_falta(
+    session: Session,
+    tabla: str,
+    columna: str,
+    definicion_sql: str,
+):
     columnas = obtener_columnas(session, tabla)
 
     if columna.lower() not in columnas:
-        print(f"🛠️ Agregando columna {tabla}.{columna}...")
-        session.exec(text(f"ALTER TABLE {tabla} ADD COLUMN {columna} {definicion_sql};"))
+        print(f"Agregando columna {tabla}.{columna}...")
+        session.exec(
+            text(f"ALTER TABLE {tabla} ADD COLUMN {columna} {definicion_sql};")
+        )
         session.commit()
         print(f"✅ Columna {tabla}.{columna} agregada")
 
 
 def ejecutar_migraciones_ligeras():
     with Session(engine) as session:
-        agregar_columna_si_falta(session, "producto", "precio_venta_sugerido", "FLOAT DEFAULT 0")
-        agregar_columna_si_falta(session, "producto", "caducidad", "DATE NULL")
-        agregar_columna_si_falta(session, "producto", "stock_minimo", "INT NOT NULL DEFAULT 10")
-        agregar_columna_si_falta(session, "producto", "stock_alto", "INT NOT NULL DEFAULT 30")
+        agregar_columna_si_falta(
+            session,
+            "producto",
+            "precio_venta_sugerido",
+            "FLOAT DEFAULT 0",
+        )
+        agregar_columna_si_falta(
+            session,
+            "producto",
+            "caducidad",
+            "DATE NULL",
+        )
+        agregar_columna_si_falta(
+            session,
+            "producto",
+            "stock_minimo",
+            "INT NOT NULL DEFAULT 10",
+        )
+        agregar_columna_si_falta(
+            session,
+            "producto",
+            "stock_alto",
+            "INT NOT NULL DEFAULT 30",
+        )
 
-        agregar_columna_si_falta(session, "movimiento", "costo_proveedor", "FLOAT DEFAULT 0")
-        agregar_columna_si_falta(session, "movimiento", "precio_venta", "FLOAT DEFAULT 0")
-        agregar_columna_si_falta(session, "movimiento", "ingreso_total", "FLOAT DEFAULT 0")
-        agregar_columna_si_falta(session, "movimiento", "costo_total", "FLOAT DEFAULT 0")
-        agregar_columna_si_falta(session, "movimiento", "ganancia", "FLOAT DEFAULT 0")
+        agregar_columna_si_falta(
+            session,
+            "movimiento",
+            "costo_proveedor",
+            "FLOAT DEFAULT 0",
+        )
+        agregar_columna_si_falta(
+            session,
+            "movimiento",
+            "precio_venta",
+            "FLOAT DEFAULT 0",
+        )
+        agregar_columna_si_falta(
+            session,
+            "movimiento",
+            "ingreso_total",
+            "FLOAT DEFAULT 0",
+        )
+        agregar_columna_si_falta(
+            session,
+            "movimiento",
+            "costo_total",
+            "FLOAT DEFAULT 0",
+        )
+        agregar_columna_si_falta(
+            session,
+            "movimiento",
+            "ganancia",
+            "FLOAT DEFAULT 0",
+        )
 
-        agregar_columna_si_falta(session, "producto_catalogo", "stock_alto", "INT NOT NULL DEFAULT 30")
+        agregar_columna_si_falta(
+            session,
+            "producto_catalogo",
+            "stock_alto",
+            "INT NOT NULL DEFAULT 30",
+        )
+        agregar_columna_si_falta(
+            session,
+            "producto_catalogo",
+            "total_vendido",
+            "INT NOT NULL DEFAULT 0",
+        )
 
 
 # ==========================================================
@@ -209,10 +285,14 @@ def on_startup():
 
 
 # ==========================================================
-# UTILIDADES DE CATÁLOGO / INVENTARIO
+# UTILIDADES CATÁLOGO / INVENTARIO
 # ==========================================================
 
-def buscar_catalogo_por_sku_o_nombre(session: Session, sku: str, nombre: str):
+def buscar_catalogo_por_sku_o_nombre(
+    session: Session,
+    sku: str,
+    nombre: str,
+) -> Optional[ProductoCatalogo]:
     sku_limpio = normalizar_texto(sku)
     nombre_limpio = normalizar_texto(nombre)
 
@@ -220,6 +300,7 @@ def buscar_catalogo_por_sku_o_nombre(session: Session, sku: str, nombre: str):
         catalogo = session.exec(
             select(ProductoCatalogo).where(ProductoCatalogo.sku == sku_limpio)
         ).first()
+
         if catalogo:
             return catalogo
 
@@ -227,83 +308,53 @@ def buscar_catalogo_por_sku_o_nombre(session: Session, sku: str, nombre: str):
         catalogo = session.exec(
             select(ProductoCatalogo).where(ProductoCatalogo.nombre == nombre_limpio)
         ).first()
+
         if catalogo:
             return catalogo
 
     return None
 
 
-def actualizar_o_crear_catalogo(
+def buscar_producto_por_sku_o_nombre(
     session: Session,
     sku: str,
     nombre: str,
-    descripcion: Optional[str],
-    costo_proveedor: float,
-    precio_venta_sugerido: float,
-    caducidad: Optional[date],
-    stock_minimo: int,
-    stock_alto: int,
-    cantidad_ingresada: int,
-):
+) -> Optional[Producto]:
     sku_limpio = normalizar_texto(sku)
     nombre_limpio = normalizar_texto(nombre)
 
-    catalogo = buscar_catalogo_por_sku_o_nombre(session, sku_limpio, nombre_limpio)
+    if sku_limpio:
+        producto = session.exec(
+            select(Producto).where(Producto.sku == sku_limpio)
+        ).first()
 
-    stock_minimo_final = stock_minimo if stock_minimo and stock_minimo > 0 else 10
-    stock_alto_final = normalizar_stock_alto(stock_minimo_final, stock_alto)
-    costo_final = costo_proveedor or 0
-    precio_final = precio_venta_sugerido or 0
-    cantidad_final = cantidad_ingresada if cantidad_ingresada and cantidad_ingresada > 0 else 0
+        if producto:
+            return producto
 
-    if catalogo:
-        total_anterior = catalogo.total_ingresado or 0
-        costo_promedio_anterior = catalogo.costo_promedio or catalogo.ultimo_costo_proveedor or 0
-        total_nuevo = total_anterior + cantidad_final
+    if nombre_limpio:
+        producto = session.exec(
+            select(Producto).where(Producto.nombre == nombre_limpio)
+        ).first()
 
-        if total_nuevo > 0 and cantidad_final > 0:
-            catalogo.costo_promedio = round(
-                ((costo_promedio_anterior * total_anterior) + (costo_final * cantidad_final))
-                / total_nuevo,
-                2,
-            )
-        elif costo_final > 0 and not catalogo.costo_promedio:
-            catalogo.costo_promedio = costo_final
+        if producto:
+            return producto
 
-        catalogo.ultimo_costo_proveedor = costo_final
-        catalogo.precio_venta_sugerido = precio_final
+    return None
 
-        # La identidad histórica NO se sobrescribe.
-        # SKU, nombre y descripción quedan fijos para evitar duplicados/confusiones.
-        if not catalogo.descripcion and descripcion:
-            catalogo.descripcion = descripcion
 
-        catalogo.caducidad = caducidad
-        catalogo.stock_minimo = stock_minimo_final
-        catalogo.stock_alto = stock_alto_final
-        catalogo.total_ingresado = total_nuevo
-        catalogo.ultima_actualizacion = mexico_now()
-
-        session.add(catalogo)
-        return catalogo
-
-    catalogo = ProductoCatalogo(
-        sku=sku_limpio,
-        nombre=nombre_limpio,
-        descripcion=descripcion,
-        ultimo_costo_proveedor=costo_final,
-        costo_promedio=costo_final,
-        precio_venta_sugerido=precio_final,
-        caducidad=caducidad,
-        stock_minimo=stock_minimo_final,
-        stock_alto=stock_alto_final,
-        total_ingresado=cantidad_final,
-        fecha_creacion=mexico_now(),
-        ultima_actualizacion=mexico_now(),
-    )
-
-    session.add(catalogo)
-    return catalogo
+def buscar_producto_por_ubicacion(
+    session: Session,
+    rack: str,
+    nivel: str,
+    slot: str,
+) -> Optional[Producto]:
+    return session.exec(
+        select(Producto).where(
+            (Producto.rack == rack)
+            & (Producto.nivel == nivel)
+            & (Producto.slot == slot)
+        )
+    ).first()
 
 
 def calcular_costo_promedio_producto(
@@ -323,9 +374,113 @@ def calcular_costo_promedio_producto(
         return 0
 
     return round(
-        ((cantidad_actual * costo_actual) + (cantidad_nueva * costo_nuevo)) / total,
+        ((cantidad_actual * costo_actual) + (cantidad_nueva * costo_nuevo))
+        / total,
         2,
     )
+
+
+def actualizar_o_crear_catalogo(
+    session: Session,
+    sku: str,
+    nombre: str,
+    descripcion: Optional[str],
+    costo_proveedor: float,
+    precio_venta_sugerido: float,
+    caducidad: Optional[date],
+    stock_minimo: int,
+    stock_alto: int,
+    cantidad_ingresada: int,
+) -> ProductoCatalogo:
+    sku_limpio = normalizar_texto(sku)
+    nombre_limpio = normalizar_texto(nombre)
+    descripcion_limpia = normalizar_texto(descripcion) or None
+
+    stock_minimo_final = normalizar_stock_minimo(stock_minimo)
+    stock_alto_final = normalizar_stock_alto(stock_minimo_final, stock_alto)
+
+    costo_final = costo_proveedor or 0
+    precio_final = precio_venta_sugerido or 0
+    cantidad_final = cantidad_ingresada if cantidad_ingresada and cantidad_ingresada > 0 else 0
+
+    catalogo = buscar_catalogo_por_sku_o_nombre(
+        session,
+        sku_limpio,
+        nombre_limpio,
+    )
+
+    if catalogo:
+        total_anterior = catalogo.total_ingresado or 0
+        costo_promedio_anterior = (
+            catalogo.costo_promedio
+            or catalogo.ultimo_costo_proveedor
+            or 0
+        )
+        total_nuevo = total_anterior + cantidad_final
+
+        if total_nuevo > 0 and cantidad_final > 0:
+            catalogo.costo_promedio = round(
+                (
+                    (costo_promedio_anterior * total_anterior)
+                    + (costo_final * cantidad_final)
+                )
+                / total_nuevo,
+                2,
+            )
+        elif costo_final > 0 and not catalogo.costo_promedio:
+            catalogo.costo_promedio = costo_final
+
+        catalogo.ultimo_costo_proveedor = costo_final
+        catalogo.precio_venta_sugerido = precio_final
+        catalogo.caducidad = caducidad
+        catalogo.stock_minimo = stock_minimo_final
+        catalogo.stock_alto = stock_alto_final
+        catalogo.total_ingresado = total_nuevo
+        catalogo.ultima_actualizacion = mexico_now()
+
+        # Identidad fija:
+        # No se sobrescribe SKU, nombre ni descripción si ya existían.
+        if not catalogo.descripcion and descripcion_limpia:
+            catalogo.descripcion = descripcion_limpia
+
+        session.add(catalogo)
+        return catalogo
+
+    catalogo = ProductoCatalogo(
+        sku=sku_limpio,
+        nombre=nombre_limpio,
+        descripcion=descripcion_limpia,
+        ultimo_costo_proveedor=costo_final,
+        costo_promedio=costo_final,
+        precio_venta_sugerido=precio_final,
+        caducidad=caducidad,
+        stock_minimo=stock_minimo_final,
+        stock_alto=stock_alto_final,
+        total_ingresado=cantidad_final,
+        total_vendido=0,
+        fecha_creacion=mexico_now(),
+        ultima_actualizacion=mexico_now(),
+    )
+
+    session.add(catalogo)
+    return catalogo
+
+
+def registrar_venta_en_catalogo(
+    session: Session,
+    sku: str,
+    nombre: str,
+    cantidad_vendida: int,
+):
+    catalogo = buscar_catalogo_por_sku_o_nombre(session, sku, nombre)
+
+    if not catalogo:
+        return
+
+    catalogo.total_vendido = (catalogo.total_vendido or 0) + cantidad_vendida
+    catalogo.ultima_actualizacion = mexico_now()
+
+    session.add(catalogo)
 
 
 # ==========================================================
@@ -403,12 +558,14 @@ def construir_resumen_inventario(
         ganancia_total = venta.get("ganancia_total", 0)
 
         margen = 0
+
         if ingreso_total > 0:
             margen = (ganancia_total / ingreso_total) * 100
 
         cantidad_ingresada_estimada = producto.cantidad + cantidad_vendida
 
         porcentaje_vendido = 0
+
         if cantidad_ingresada_estimada > 0:
             porcentaje_vendido = (
                 cantidad_vendida / cantidad_ingresada_estimada
@@ -426,7 +583,9 @@ def construir_resumen_inventario(
                 "ubicacion": f"{producto.rack}-{producto.nivel}-{producto.slot}",
                 "costo_proveedor": producto.costo_proveedor,
                 "precio_venta_sugerido": producto.precio_venta_sugerido,
-                "caducidad": str(producto.caducidad) if producto.caducidad else None,
+                "caducidad": str(producto.caducidad)
+                if producto.caducidad
+                else None,
                 "dias_para_caducar": dias_caducidad,
                 "cantidad_vendida": cantidad_vendida,
                 "cantidad_ingresada_estimada": cantidad_ingresada_estimada,
@@ -526,12 +685,14 @@ def generar_respuesta_fallback(pregunta: str, resumen: Dict[str, Any]) -> str:
     respuesta.append("RACKNOVA IA funcionó en modo automático interno.")
     respuesta.append("")
     respuesta.append(
-        "El modelo externo de IA no respondió correctamente, pero RackNova generó un análisis con su motor interno de reglas usando los datos actuales del inventario."
+        "El modelo externo de IA no respondió correctamente, pero RackNova generó "
+        "un análisis con su motor interno de reglas usando los datos actuales del inventario."
     )
     respuesta.append("")
 
     if vencidos:
         respuesta.append("Productos vencidos")
+
         for p in vencidos:
             respuesta.append(
                 f"- {p.get('nombre')} ({p.get('sku')}) está vencido desde hace "
@@ -539,10 +700,12 @@ def generar_respuesta_fallback(pregunta: str, resumen: Dict[str, Any]) -> str:
                 f"Recomendación: retirar/eliminar del inventario y registrar merma. "
                 f"Ubicación: {p.get('ubicacion')}."
             )
+
         respuesta.append("")
 
     if proximos_caducar:
         respuesta.append("Productos próximos a caducar")
+
         for p in proximos_caducar:
             dias = p.get("dias_para_caducar")
 
@@ -560,20 +723,24 @@ def generar_respuesta_fallback(pregunta: str, resumen: Dict[str, Any]) -> str:
                 f"Recomendación: mover a una posición visible y considerar descuento del {descuento}%. "
                 f"Stock actual: {p.get('stock_actual')} pieza(s)."
             )
+
         respuesta.append("")
 
     if stock_bajo:
         respuesta.append("Productos con stock bajo")
+
         for p in stock_bajo:
             respuesta.append(
                 f"- {p.get('nombre')} ({p.get('sku')}) tiene stock bajo. "
                 f"Actual: {p.get('stock_actual')} / mínimo: {p.get('stock_minimo')}. "
                 f"Recomendación: revisar reposición."
             )
+
         respuesta.append("")
 
     if baja_rotacion:
         respuesta.append("Productos con baja rotación")
+
         for p in baja_rotacion:
             respuesta.append(
                 f"- {p.get('nombre')} ({p.get('sku')}) tiene baja rotación. "
@@ -581,10 +748,12 @@ def generar_respuesta_fallback(pregunta: str, resumen: Dict[str, Any]) -> str:
                 f"{p.get('porcentaje_vendido_inventario', 0)}%. "
                 f"Recomendación: cambiar a una posición más visible y evaluar promoción."
             )
+
         respuesta.append("")
 
     if rentables:
         respuesta.append("Productos rentables")
+
         for p in rentables:
             respuesta.append(
                 f"- {p.get('nombre')} ({p.get('sku')}) tiene buen margen. "
@@ -592,12 +761,14 @@ def generar_respuesta_fallback(pregunta: str, resumen: Dict[str, Any]) -> str:
                 f"Ganancia acumulada: ${round(p.get('ganancia_total', 0), 2)}. "
                 f"Recomendación: mantener seguimiento y disponibilidad."
             )
+
         respuesta.append("")
 
     if not vencidos and not proximos_caducar and not stock_bajo and not baja_rotacion and not rentables:
         respuesta.append(
             "No se detectaron alertas importantes con los datos actuales. "
-            "El inventario parece estable, pero se recomienda seguir registrando entradas y salidas para mejorar el análisis."
+            "El inventario parece estable, pero se recomienda seguir registrando entradas "
+            "y salidas para mejorar el análisis."
         )
 
     return "\n".join(respuesta)
@@ -668,7 +839,7 @@ La respuesta debe ser clara, breve y útil para tomar decisiones.
             },
         ],
         "thinking": {
-            "type": "disabled"
+            "type": "disabled",
         },
         "temperature": 0.3,
         "max_tokens": 1200,
@@ -751,6 +922,7 @@ def check_db(session: SessionDep):
 def listar_catalogo(session: SessionDep):
     try:
         return session.exec(select(ProductoCatalogo)).all()
+
     except Exception as e:
         print(f"❌ List catalog error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -763,10 +935,14 @@ def buscar_catalogo(
 ):
     try:
         q = f"%{query.strip()}%"
+
         statement = select(ProductoCatalogo).where(
-            (ProductoCatalogo.sku.like(q)) | (ProductoCatalogo.nombre.like(q))
+            (ProductoCatalogo.sku.like(q))
+            | (ProductoCatalogo.nombre.like(q))
         )
+
         return session.exec(statement).all()
+
     except Exception as e:
         print(f"❌ Search catalog error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -787,7 +963,7 @@ def obtener_catalogo_por_sku(sku: str, session: SessionDep):
 @app.post("/catalogo/productos", response_model=ProductoCatalogo)
 def crear_o_actualizar_catalogo(producto: ProductoCatalogo, session: SessionDep):
     try:
-        stock_minimo = producto.stock_minimo if producto.stock_minimo and producto.stock_minimo > 0 else 10
+        stock_minimo = normalizar_stock_minimo(producto.stock_minimo)
         stock_alto = normalizar_stock_alto(stock_minimo, producto.stock_alto)
 
         catalogo = actualizar_o_crear_catalogo(
@@ -795,7 +971,9 @@ def crear_o_actualizar_catalogo(producto: ProductoCatalogo, session: SessionDep)
             sku=producto.sku,
             nombre=producto.nombre,
             descripcion=producto.descripcion,
-            costo_proveedor=producto.ultimo_costo_proveedor or producto.costo_promedio or 0,
+            costo_proveedor=producto.ultimo_costo_proveedor
+            or producto.costo_promedio
+            or 0,
             precio_venta_sugerido=producto.precio_venta_sugerido or 0,
             caducidad=producto.caducidad,
             stock_minimo=stock_minimo,
@@ -805,6 +983,7 @@ def crear_o_actualizar_catalogo(producto: ProductoCatalogo, session: SessionDep)
 
         session.commit()
         session.refresh(catalogo)
+
         return catalogo
 
     except Exception as e:
@@ -886,32 +1065,73 @@ def crear_producto(producto: Producto, session: SessionDep):
         producto.sku = normalizar_texto(producto.sku)
         producto.nombre = normalizar_texto(producto.nombre)
         producto.descripcion = normalizar_texto(producto.descripcion) or None
+
         producto.cantidad = producto.cantidad if producto.cantidad and producto.cantidad > 0 else 0
         producto.costo_proveedor = producto.costo_proveedor or 0
         producto.precio_venta_sugerido = producto.precio_venta_sugerido or 0
-        producto.stock_minimo = producto.stock_minimo if producto.stock_minimo and producto.stock_minimo > 0 else 10
-        producto.stock_alto = normalizar_stock_alto(producto.stock_minimo, producto.stock_alto)
+        producto.stock_minimo = normalizar_stock_minimo(producto.stock_minimo)
+        producto.stock_alto = normalizar_stock_alto(
+            producto.stock_minimo,
+            producto.stock_alto,
+        )
+
+        producto.rack = normalizar_texto(producto.rack)
+        producto.nivel = normalizar_texto(producto.nivel)
+        producto.slot = normalizar_texto(producto.slot)
 
         if not producto.sku or not producto.nombre:
-            raise HTTPException(status_code=400, detail="SKU y nombre son obligatorios.")
+            raise HTTPException(
+                status_code=400,
+                detail="SKU y nombre son obligatorios.",
+            )
 
-        catalogo = buscar_catalogo_por_sku_o_nombre(session, producto.sku, producto.nombre)
+        if producto.cantidad <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="La cantidad debe ser mayor a 0.",
+            )
 
+        catalogo = buscar_catalogo_por_sku_o_nombre(
+            session,
+            producto.sku,
+            producto.nombre,
+        )
+
+        producto_existente = buscar_producto_por_sku_o_nombre(
+            session,
+            producto.sku,
+            producto.nombre,
+        )
+
+        # ======================================================
+        # SI EXISTE EN CATÁLOGO:
+        # SKU, nombre y descripción se fuerzan desde el histórico.
+        # Esto evita que se guarde otro nombre con el mismo SKU
+        # o que se guarde otro SKU con el mismo nombre.
+        # ======================================================
         if catalogo:
-            # Si el SKU o nombre ya existe en histórico, se fuerza la identidad real.
-            # Aunque el frontend/Swagger mande otro nombre o descripción, no se acepta.
             producto.sku = catalogo.sku
             producto.nombre = catalogo.nombre
             producto.descripcion = catalogo.descripcion
 
-        producto_existente = session.exec(
-            select(Producto).where(Producto.sku == producto.sku)
-        ).first()
+            producto_existente = buscar_producto_por_sku_o_nombre(
+                session,
+                producto.sku,
+                producto.nombre,
+            )
 
+        # ======================================================
+        # SI EXISTE EN INVENTARIO:
+        # RESTOCK INTELIGENTE
+        # - conserva SKU, nombre, descripción y ubicación
+        # - suma cantidad
+        # - calcula costo promedio
+        # - actualiza campos editables
+        # ======================================================
         if producto_existente:
             cantidad_anterior = producto_existente.cantidad or 0
             cantidad_nueva = producto.cantidad or 0
-            nueva_cantidad_total = cantidad_anterior + cantidad_nueva
+
             nuevo_costo_promedio = calcular_costo_promedio_producto(
                 cantidad_actual=cantidad_anterior,
                 costo_actual=producto_existente.costo_proveedor or 0,
@@ -919,14 +1139,23 @@ def crear_producto(producto: Producto, session: SessionDep):
                 costo_nuevo=producto.costo_proveedor or 0,
             )
 
-            producto_existente.cantidad = nueva_cantidad_total
+            producto_existente.cantidad = cantidad_anterior + cantidad_nueva
             producto_existente.costo_proveedor = nuevo_costo_promedio
             producto_existente.precio_venta_sugerido = producto.precio_venta_sugerido
-            # En restock no se cambia la identidad ni descripción del producto existente.
             producto_existente.caducidad = producto.caducidad
             producto_existente.stock_minimo = producto.stock_minimo
             producto_existente.stock_alto = producto.stock_alto
             producto_existente.ultima_actualizacion = mexico_now()
+
+            # Identidad fija.
+            # Si hay catálogo, se fuerza la identidad histórica.
+            # Si no hay catálogo, se conserva la identidad actual del producto.
+            if catalogo:
+                producto_existente.sku = catalogo.sku
+                producto_existente.nombre = catalogo.nombre
+                producto_existente.descripcion = catalogo.descripcion
+
+            session.add(producto_existente)
 
             actualizar_o_crear_catalogo(
                 session=session,
@@ -941,20 +1170,29 @@ def crear_producto(producto: Producto, session: SessionDep):
                 cantidad_ingresada=cantidad_nueva,
             )
 
-            session.add(producto_existente)
             session.commit()
             session.refresh(producto_existente)
+
             return producto_existente
 
-        existe_slot = session.exec(
-            select(Producto).where(
-                (Producto.rack == producto.rack)
-                & (Producto.nivel == producto.nivel)
-                & (Producto.slot == producto.slot)
+        # ======================================================
+        # PRODUCTO NUEVO:
+        # valida ubicación libre y crea producto.
+        # ======================================================
+        if not producto.rack or not producto.nivel or not producto.slot:
+            raise HTTPException(
+                status_code=400,
+                detail="Rack, nivel y slot son obligatorios para un producto nuevo.",
             )
-        ).first()
 
-        if existe_slot:
+        producto_en_slot = buscar_producto_por_ubicacion(
+            session,
+            producto.rack,
+            producto.nivel,
+            producto.slot,
+        )
+
+        if producto_en_slot:
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -965,6 +1203,8 @@ def crear_producto(producto: Producto, session: SessionDep):
 
         producto.fecha_registro = mexico_now()
         producto.ultima_actualizacion = mexico_now()
+
+        session.add(producto)
 
         actualizar_o_crear_catalogo(
             session=session,
@@ -979,15 +1219,17 @@ def crear_producto(producto: Producto, session: SessionDep):
             cantidad_ingresada=producto.cantidad,
         )
 
-        session.add(producto)
         session.commit()
         session.refresh(producto)
 
         return producto
 
+    except HTTPException:
+        raise
+
     except Exception as e:
         print(f"❌ Create/restock product error: {e}")
-        raise
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/productos", response_model=List[Producto])
@@ -1003,37 +1245,48 @@ def listar_productos(session: SessionDep):
 @app.put("/productos/{sku}", response_model=Producto)
 def update_producto(sku: str, updated: Producto, session: SessionDep):
     try:
-        db_producto = session.query(Producto).filter(Producto.sku == sku).first()
+        db_producto = session.exec(
+            select(Producto).where(Producto.sku == sku)
+        ).first()
 
         if not db_producto:
             raise HTTPException(status_code=404, detail="Producto no encontrado")
 
-        updated_stock_minimo = updated.stock_minimo if updated.stock_minimo and updated.stock_minimo > 0 else 10
-        updated_stock_alto = normalizar_stock_alto(updated_stock_minimo, updated.stock_alto)
+        catalogo = buscar_catalogo_por_sku_o_nombre(
+            session,
+            db_producto.sku,
+            db_producto.nombre,
+        )
 
-        updated_sku = normalizar_texto(updated.sku)
-        updated_nombre = normalizar_texto(updated.nombre)
-        catalogo = buscar_catalogo_por_sku_o_nombre(session, updated_sku, updated_nombre)
-
+        # Identidad fija si existe en catálogo.
         if catalogo:
             db_producto.sku = catalogo.sku
             db_producto.nombre = catalogo.nombre
             db_producto.descripcion = catalogo.descripcion
         else:
-            db_producto.sku = updated_sku
-            db_producto.nombre = updated_nombre
-            db_producto.descripcion = updated.descripcion
+            # Si no existe en catálogo, conserva identidad actual.
+            db_producto.descripcion = db_producto.descripcion
 
         db_producto.cantidad = updated.cantidad
-        db_producto.rack = updated.rack
-        db_producto.nivel = updated.nivel
-        db_producto.slot = updated.slot
         db_producto.costo_proveedor = updated.costo_proveedor or 0
         db_producto.precio_venta_sugerido = updated.precio_venta_sugerido or 0
         db_producto.caducidad = updated.caducidad
-        db_producto.stock_minimo = updated_stock_minimo
-        db_producto.stock_alto = updated_stock_alto
+        db_producto.stock_minimo = normalizar_stock_minimo(updated.stock_minimo)
+        db_producto.stock_alto = normalizar_stock_alto(
+            db_producto.stock_minimo,
+            updated.stock_alto,
+        )
+
+        # La ubicación solo se actualiza si no está vacía.
+        # Más adelante, cuando Dashboard sea solo visual, casi no se usará.
+        if updated.rack and updated.nivel and updated.slot:
+            db_producto.rack = updated.rack
+            db_producto.nivel = updated.nivel
+            db_producto.slot = updated.slot
+
         db_producto.ultima_actualizacion = mexico_now()
+
+        session.add(db_producto)
 
         actualizar_o_crear_catalogo(
             session=session,
@@ -1053,15 +1306,20 @@ def update_producto(sku: str, updated: Producto, session: SessionDep):
 
         return db_producto
 
+    except HTTPException:
+        raise
+
     except Exception as e:
         print(f"❌ Update product error: {e}")
-        raise
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.delete("/productos/sku/{sku}")
 def eliminar_producto_por_sku(sku: str, session: SessionDep):
     try:
-        db_producto = session.query(Producto).filter(Producto.sku == sku).first()
+        db_producto = session.exec(
+            select(Producto).where(Producto.sku == sku)
+        ).first()
 
         if not db_producto:
             raise HTTPException(
@@ -1074,15 +1332,20 @@ def eliminar_producto_por_sku(sku: str, session: SessionDep):
 
         return {"mensaje": f"✅ Producto con SKU {sku} eliminado correctamente"}
 
+    except HTTPException:
+        raise
+
     except Exception as e:
         print(f"❌ Delete product error: {e}")
-        raise
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/productos/sku/{sku}/salida")
 def registrar_salida_producto(sku: str, salida: SalidaProducto, session: SessionDep):
     try:
-        db_producto = session.query(Producto).filter(Producto.sku == sku).first()
+        db_producto = session.exec(
+            select(Producto).where(Producto.sku == sku)
+        ).first()
 
         if not db_producto:
             raise HTTPException(
@@ -1101,6 +1364,13 @@ def registrar_salida_producto(sku: str, salida: SalidaProducto, session: Session
                 status_code=400,
                 detail="No puedes vender más cantidad de la existente",
             )
+
+        registrar_venta_en_catalogo(
+            session=session,
+            sku=db_producto.sku,
+            nombre=db_producto.nombre,
+            cantidad_vendida=salida.cantidad_vendida,
+        )
 
         db_producto.ultima_actualizacion = mexico_now()
 
@@ -1123,13 +1393,16 @@ def registrar_salida_producto(sku: str, salida: SalidaProducto, session: Session
             "ganancia": salida.ganancia,
         }
 
+    except HTTPException:
+        raise
+
     except Exception as e:
         print(f"❌ Error registrando salida financiera: {e}")
-        raise
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ==========================================================
-# ENDPOINTS MOVIMIENTOS / FINANZAS / AUTH
+# MOVIMIENTOS
 # ==========================================================
 
 @app.post("/movimientos", response_model=Movimiento)
@@ -1158,6 +1431,10 @@ def listar_movimientos(session: SessionDep):
         raise
 
 
+# ==========================================================
+# FINANZAS
+# ==========================================================
+
 @app.get("/finanzas/resumen")
 def resumen_financiero(session: SessionDep):
     try:
@@ -1171,9 +1448,7 @@ def resumen_financiero(session: SessionDep):
             m.costo_total or 0 for m in movimientos if m.accion == "Ingreso"
         )
 
-        ganancia = sum(
-            m.ganancia or 0 for m in movimientos if m.accion == "Egreso"
-        )
+        ganancia = ingresos - costos
 
         return {
             "ingresos": ingresos,
@@ -1208,7 +1483,10 @@ def grafica_financiera(session: SessionDep):
 
             elif m.accion == "Egreso":
                 datos[fecha_key]["ingresos"] += m.ingreso_total or 0
-                datos[fecha_key]["ganancia"] += m.ganancia or 0
+
+            datos[fecha_key]["ganancia"] = (
+                datos[fecha_key]["ingresos"] - datos[fecha_key]["costos"]
+            )
 
         return list(datos.values())
 
@@ -1216,6 +1494,10 @@ def grafica_financiera(session: SessionDep):
         print(f"❌ Error obteniendo gráfica financiera: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# ==========================================================
+# LOGIN
+# ==========================================================
 
 @app.post("/auth/login")
 def login(data: LoginRequest):
@@ -1234,6 +1516,10 @@ def login(data: LoginRequest):
     raise HTTPException(status_code=401, detail="Credenciales incorrectas")
 
 
+# ==========================================================
+# ADMIN
+# ==========================================================
+
 @app.delete("/movimientos/{id_mov}")
 def eliminar_movimiento(id_mov: int, session: SessionDep):
     try:
@@ -1247,9 +1533,12 @@ def eliminar_movimiento(id_mov: int, session: SessionDep):
 
         return {"mensaje": "Movimiento eliminado"}
 
+    except HTTPException:
+        raise
+
     except Exception as e:
         print(f"❌ Delete movement error: {e}")
-        raise
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.delete("/admin/clear-all")
@@ -1273,7 +1562,11 @@ def limpiar_toda_la_base(confirm: str, session: SessionDep):
 
         return {
             "mensaje": "Base de datos limpiada correctamente",
-            "tablas_limpiadas": ["movimiento", "producto", "producto_catalogo"],
+            "tablas_limpiadas": [
+                "movimiento",
+                "producto",
+                "producto_catalogo",
+            ],
         }
 
     except Exception as e:
