@@ -416,7 +416,7 @@ def llamar_deepseek(pregunta: str, resumen: Dict[str, Any]) -> str:
 
     model = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
-   system_prompt = """
+    system_prompt = """
 Eres RACKNOVA IA, un asistente experto en inventarios, almacenes, caducidad,
 rotación, descuentos, rentabilidad y decisiones de compra.
 
@@ -435,11 +435,10 @@ Reglas estrictas:
 - Si el usuario pregunta qué comprar, prioriza stock bajo, buena venta, buen margen y buena rotación.
 - Si el usuario pregunta qué mover de lugar, prioriza productos sin venta o con baja rotación.
 - Responde como asesor ejecutivo, no como reporte técnico largo.
-- No puedes usar viñetas.
+- No uses demasiadas viñetas.
 - No uses asteriscos de Markdown como **texto** o *viñetas*.
-- Nunca despues de un viñeta debe haber otra porque visualmente se ve muy mal
-- Tampoco el uso de ###
-- Siempre intenta que la respuesta se vea bien para el usuario
+- Evita listas largas. Si hay muchos productos, menciona solo los 3 más importantes y resume el resto.
+- Usa párrafos cortos y claros.
 - Termina con una recomendación concreta.
 - Tu respuesta final nunca debe estar vacía.
 """
@@ -451,7 +450,11 @@ Pregunta del usuario:
 Resumen del inventario en JSON:
 {json.dumps(resumen, ensure_ascii=False, default=str)}
 
-Responde con un análisis claro, en español y en formato de lista.
+Responde en español con estilo ejecutivo.
+No uses Markdown pesado.
+No uses listas largas.
+Si hay muchos productos, menciona máximo 3 productos principales y después da una conclusión general.
+La respuesta debe ser clara, breve y útil para tomar decisiones.
 """
 
     payload = {
@@ -515,7 +518,6 @@ Responde con un análisis claro, en español y en formato de lista.
             status_code=500,
             detail=f"Error general de IA: {str(e)}",
         )
-
 
 # ==========================================================
 # ENDPOINTS PRINCIPALES
