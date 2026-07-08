@@ -272,7 +272,12 @@ def actualizar_o_crear_catalogo(
 
         catalogo.ultimo_costo_proveedor = costo_final
         catalogo.precio_venta_sugerido = precio_final
-        catalogo.descripcion = descripcion
+
+        # La identidad histórica NO se sobrescribe.
+        # SKU, nombre y descripción quedan fijos para evitar duplicados/confusiones.
+        if not catalogo.descripcion and descripcion:
+            catalogo.descripcion = descripcion
+
         catalogo.caducidad = caducidad
         catalogo.stock_minimo = stock_minimo_final
         catalogo.stock_alto = stock_alto_final
@@ -893,10 +898,11 @@ def crear_producto(producto: Producto, session: SessionDep):
         catalogo = buscar_catalogo_por_sku_o_nombre(session, producto.sku, producto.nombre)
 
         if catalogo:
+            # Si el SKU o nombre ya existe en histórico, se fuerza la identidad real.
+            # Aunque el frontend/Swagger mande otro nombre o descripción, no se acepta.
             producto.sku = catalogo.sku
             producto.nombre = catalogo.nombre
-            if not producto.descripcion:
-                producto.descripcion = catalogo.descripcion
+            producto.descripcion = catalogo.descripcion
 
         producto_existente = session.exec(
             select(Producto).where(Producto.sku == producto.sku)
@@ -916,7 +922,7 @@ def crear_producto(producto: Producto, session: SessionDep):
             producto_existente.cantidad = nueva_cantidad_total
             producto_existente.costo_proveedor = nuevo_costo_promedio
             producto_existente.precio_venta_sugerido = producto.precio_venta_sugerido
-            producto_existente.descripcion = producto.descripcion or producto_existente.descripcion
+            # En restock no se cambia la identidad ni descripción del producto existente.
             producto_existente.caducidad = producto.caducidad
             producto_existente.stock_minimo = producto.stock_minimo
             producto_existente.stock_alto = producto.stock_alto
@@ -1005,10 +1011,20 @@ def update_producto(sku: str, updated: Producto, session: SessionDep):
         updated_stock_minimo = updated.stock_minimo if updated.stock_minimo and updated.stock_minimo > 0 else 10
         updated_stock_alto = normalizar_stock_alto(updated_stock_minimo, updated.stock_alto)
 
-        db_producto.sku = normalizar_texto(updated.sku)
-        db_producto.nombre = normalizar_texto(updated.nombre)
+        updated_sku = normalizar_texto(updated.sku)
+        updated_nombre = normalizar_texto(updated.nombre)
+        catalogo = buscar_catalogo_por_sku_o_nombre(session, updated_sku, updated_nombre)
+
+        if catalogo:
+            db_producto.sku = catalogo.sku
+            db_producto.nombre = catalogo.nombre
+            db_producto.descripcion = catalogo.descripcion
+        else:
+            db_producto.sku = updated_sku
+            db_producto.nombre = updated_nombre
+            db_producto.descripcion = updated.descripcion
+
         db_producto.cantidad = updated.cantidad
-        db_producto.descripcion = updated.descripcion
         db_producto.rack = updated.rack
         db_producto.nivel = updated.nivel
         db_producto.slot = updated.slot
