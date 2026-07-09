@@ -1,6 +1,5 @@
 # ==========================================================
-# RACKNOVA API — SISTEMA DE INVENTARIO CON FASTAPI + IA
-# Catálogo histórico + restock inteligente + costo promedio
+# RACKNOVA API — INVENTARIO + CATÁLOGO + LOTES FEFO + IA
 # ==========================================================
 
 from pydantic import BaseModel
@@ -18,13 +17,8 @@ import urllib.request
 import urllib.error
 
 
-# ==========================================================
-# DATABASE
-# ==========================================================
-
 try:
     from database import engine, get_session
-
     print("✅ Database module imported successfully")
 except Exception as e:
     print(f"❌ ERROR importing database: {e}")
@@ -43,7 +37,7 @@ def normalizar_texto(value: Optional[str]) -> str:
 
 
 def normalizar_stock_minimo(stock_minimo: Optional[int]) -> int:
-    if stock_minimo and stock_minimo > 0:
+    if stock_minimo is not None and stock_minimo > 0:
         return stock_minimo
 
     return 10
@@ -52,7 +46,7 @@ def normalizar_stock_minimo(stock_minimo: Optional[int]) -> int:
 def normalizar_stock_alto(stock_minimo: Optional[int], stock_alto: Optional[int]) -> int:
     minimo = normalizar_stock_minimo(stock_minimo)
 
-    if stock_alto and stock_alto > minimo:
+    if stock_alto is not None and stock_alto > minimo:
         return stock_alto
 
     return minimo * 3
@@ -88,8 +82,9 @@ class Producto(SQLModel, table=True):
 
     sku: str
     nombre: str
-    cantidad: int = 0
     descripcion: Optional[str] = None
+
+    cantidad: int = 0
 
     rack: str
     nivel: str
@@ -98,7 +93,10 @@ class Producto(SQLModel, table=True):
     costo_proveedor: float = 0
     precio_venta_sugerido: float = 0
 
+    # Compatibilidad con frontend/reportes:
+    # aquí guardamos la caducidad más próxima vigente.
     caducidad: Optional[date] = None
+
     stock_minimo: int = 10
     stock_alto: int = 30
 
@@ -111,23 +109,30 @@ class ProductoCatalogo(SQLModel, table=True):
 
     id_catalogo: Optional[int] = Field(default=None, primary_key=True)
 
+    # El catálogo histórico SOLO guarda identidad fija.
     sku: str = Field(index=True)
     nombre: str = Field(index=True)
     descripcion: Optional[str] = None
 
-    ultimo_costo_proveedor: float = 0
-    costo_promedio: float = 0
-    precio_venta_sugerido: float = 0
-
-    caducidad: Optional[date] = None
-    stock_minimo: int = 10
-    stock_alto: int = 30
-
-    total_ingresado: int = 0
-    total_vendido: int = 0
-
     fecha_creacion: datetime = Field(default_factory=mexico_now)
     ultima_actualizacion: datetime = Field(default_factory=mexico_now)
+
+
+class ProductoLote(SQLModel, table=True):
+    __tablename__ = "producto_lote"
+
+    id_lote: Optional[int] = Field(default=None, primary_key=True)
+
+    sku: str = Field(index=True)
+    nombre: str
+
+    cantidad_inicial: int
+    cantidad_actual: int
+
+    costo_unitario: float = 0
+    caducidad: Optional[date] = None
+
+    fecha_ingreso: datetime = Field(default_factory=mexico_now)
 
 
 class Movimiento(SQLModel, table=True):
@@ -201,6 +206,12 @@ def ejecutar_migraciones_ligeras():
         agregar_columna_si_falta(
             session,
             "producto",
+            "descripcion",
+            "TEXT NULL",
+        )
+        agregar_columna_si_falta(
+            session,
+            "producto",
             "precio_venta_sugerido",
             "FLOAT DEFAULT 0",
         )
@@ -254,19 +265,6 @@ def ejecutar_migraciones_ligeras():
             "FLOAT DEFAULT 0",
         )
 
-        agregar_columna_si_falta(
-            session,
-            "producto_catalogo",
-            "stock_alto",
-            "INT NOT NULL DEFAULT 30",
-        )
-        agregar_columna_si_falta(
-            session,
-            "producto_catalogo",
-            "total_vendido",
-            "INT NOT NULL DEFAULT 0",
-        )
-
 
 # ==========================================================
 # STARTUP
@@ -285,7 +283,7 @@ def on_startup():
 
 
 # ==========================================================
-# UTILIDADES CATÁLOGO / INVENTARIO
+# UTILIDADES CATÁLOGO / PRODUCTO / LOTES
 # ==========================================================
 
 def buscar_catalogo_por_sku_o_nombre(
@@ -313,6 +311,29 @@ def buscar_catalogo_por_sku_o_nombre(
             return catalogo
 
     return None
+
+
+def crear_catalogo_si_no_existe(
+    session: Session,
+    sku: str,
+    nombre: str,
+    descripcion: Optional[str],
+) -> ProductoCatalogo:
+    catalogo = buscar_catalogo_por_sku_o_nombre(session, sku, nombre)
+
+    if catalogo:
+        return catalogo
+
+    catalogo = ProductoCatalogo(
+        sku=normalizar_texto(sku),
+        nombre=normalizar_texto(nombre),
+        descripcion=normalizar_texto(descripcion) or None,
+        fecha_creacion=mexico_now(),
+        ultima_actualizacion=mexico_now(),
+    )
+
+    session.add(catalogo)
+    return catalogo
 
 
 def buscar_producto_por_sku_o_nombre(
@@ -380,107 +401,90 @@ def calcular_costo_promedio_producto(
     )
 
 
-def actualizar_o_crear_catalogo(
+def crear_lote(
     session: Session,
-    sku: str,
-    nombre: str,
-    descripcion: Optional[str],
-    costo_proveedor: float,
-    precio_venta_sugerido: float,
+    producto: Producto,
+    cantidad: int,
+    costo_unitario: float,
     caducidad: Optional[date],
-    stock_minimo: int,
-    stock_alto: int,
-    cantidad_ingresada: int,
-) -> ProductoCatalogo:
-    sku_limpio = normalizar_texto(sku)
-    nombre_limpio = normalizar_texto(nombre)
-    descripcion_limpia = normalizar_texto(descripcion) or None
-
-    stock_minimo_final = normalizar_stock_minimo(stock_minimo)
-    stock_alto_final = normalizar_stock_alto(stock_minimo_final, stock_alto)
-
-    costo_final = costo_proveedor or 0
-    precio_final = precio_venta_sugerido or 0
-    cantidad_final = cantidad_ingresada if cantidad_ingresada and cantidad_ingresada > 0 else 0
-
-    catalogo = buscar_catalogo_por_sku_o_nombre(
-        session,
-        sku_limpio,
-        nombre_limpio,
-    )
-
-    if catalogo:
-        total_anterior = catalogo.total_ingresado or 0
-        costo_promedio_anterior = (
-            catalogo.costo_promedio
-            or catalogo.ultimo_costo_proveedor
-            or 0
-        )
-        total_nuevo = total_anterior + cantidad_final
-
-        if total_nuevo > 0 and cantidad_final > 0:
-            catalogo.costo_promedio = round(
-                (
-                    (costo_promedio_anterior * total_anterior)
-                    + (costo_final * cantidad_final)
-                )
-                / total_nuevo,
-                2,
-            )
-        elif costo_final > 0 and not catalogo.costo_promedio:
-            catalogo.costo_promedio = costo_final
-
-        catalogo.ultimo_costo_proveedor = costo_final
-        catalogo.precio_venta_sugerido = precio_final
-        catalogo.caducidad = caducidad
-        catalogo.stock_minimo = stock_minimo_final
-        catalogo.stock_alto = stock_alto_final
-        catalogo.total_ingresado = total_nuevo
-        catalogo.ultima_actualizacion = mexico_now()
-
-        # Identidad fija:
-        # No se sobrescribe SKU, nombre ni descripción si ya existían.
-        if not catalogo.descripcion and descripcion_limpia:
-            catalogo.descripcion = descripcion_limpia
-
-        session.add(catalogo)
-        return catalogo
-
-    catalogo = ProductoCatalogo(
-        sku=sku_limpio,
-        nombre=nombre_limpio,
-        descripcion=descripcion_limpia,
-        ultimo_costo_proveedor=costo_final,
-        costo_promedio=costo_final,
-        precio_venta_sugerido=precio_final,
+) -> ProductoLote:
+    lote = ProductoLote(
+        sku=producto.sku,
+        nombre=producto.nombre,
+        cantidad_inicial=cantidad,
+        cantidad_actual=cantidad,
+        costo_unitario=costo_unitario or 0,
         caducidad=caducidad,
-        stock_minimo=stock_minimo_final,
-        stock_alto=stock_alto_final,
-        total_ingresado=cantidad_final,
-        total_vendido=0,
-        fecha_creacion=mexico_now(),
-        ultima_actualizacion=mexico_now(),
+        fecha_ingreso=mexico_now(),
     )
 
-    session.add(catalogo)
-    return catalogo
+    session.add(lote)
+    return lote
 
 
-def registrar_venta_en_catalogo(
+def obtener_lotes_activos(session: Session, sku: str) -> List[ProductoLote]:
+    lotes = session.exec(
+        select(ProductoLote).where(
+            (ProductoLote.sku == sku)
+            & (ProductoLote.cantidad_actual > 0)
+        )
+    ).all()
+
+    return sorted(
+        lotes,
+        key=lambda lote: (
+            lote.caducidad is None,
+            lote.caducidad or date.max,
+            lote.fecha_ingreso,
+            lote.id_lote or 0,
+        ),
+    )
+
+
+def obtener_caducidad_mas_proxima(session: Session, sku: str) -> Optional[date]:
+    lotes = obtener_lotes_activos(session, sku)
+
+    for lote in lotes:
+        if lote.caducidad:
+            return lote.caducidad
+
+    return None
+
+
+def descontar_lotes_fefo(
     session: Session,
     sku: str,
-    nombre: str,
-    cantidad_vendida: int,
-):
-    catalogo = buscar_catalogo_por_sku_o_nombre(session, sku, nombre)
+    cantidad: int,
+) -> List[Dict[str, Any]]:
+    restante = cantidad
+    detalle = []
 
-    if not catalogo:
-        return
+    for lote in obtener_lotes_activos(session, sku):
+        if restante <= 0:
+            break
 
-    catalogo.total_vendido = (catalogo.total_vendido or 0) + cantidad_vendida
-    catalogo.ultima_actualizacion = mexico_now()
+        descontar = min(lote.cantidad_actual, restante)
 
-    session.add(catalogo)
+        lote.cantidad_actual -= descontar
+        restante -= descontar
+
+        session.add(lote)
+
+        detalle.append(
+            {
+                "id_lote": lote.id_lote,
+                "cantidad_descontada": descontar,
+                "caducidad": str(lote.caducidad) if lote.caducidad else None,
+            }
+        )
+
+    if restante > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="No hay suficiente cantidad disponible en lotes para esta salida.",
+        )
+
+    return detalle
 
 
 # ==========================================================
@@ -491,13 +495,13 @@ def calcular_dias_caducidad(caducidad_value: Optional[date]):
     if not caducidad_value:
         return None
 
-    hoy = mexico_now().date()
-    return (caducidad_value - hoy).days
+    return (caducidad_value - mexico_now().date()).days
 
 
 def construir_resumen_inventario(
     productos: List[Producto],
     movimientos: List[Movimiento],
+    session: Optional[Session] = None,
 ) -> Dict[str, Any]:
     ventas_por_sku: Dict[str, Dict[str, Any]] = {}
     ingresos_por_sku: Dict[str, Dict[str, Any]] = {}
@@ -551,7 +555,6 @@ def construir_resumen_inventario(
 
     for producto in productos:
         venta = ventas_por_sku.get(producto.sku, {})
-        ingreso = ingresos_por_sku.get(producto.sku, {})
 
         cantidad_vendida = venta.get("cantidad_vendida", 0)
         ingreso_total = venta.get("ingreso_total", 0)
@@ -573,6 +576,19 @@ def construir_resumen_inventario(
 
         dias_caducidad = calcular_dias_caducidad(producto.caducidad)
 
+        lotes_resumen = []
+
+        if session:
+            for lote in obtener_lotes_activos(session, producto.sku):
+                lotes_resumen.append(
+                    {
+                        "id_lote": lote.id_lote,
+                        "cantidad_actual": lote.cantidad_actual,
+                        "caducidad": str(lote.caducidad) if lote.caducidad else None,
+                        "dias_para_caducar": calcular_dias_caducidad(lote.caducidad),
+                    }
+                )
+
         productos_resumen.append(
             {
                 "sku": producto.sku,
@@ -583,10 +599,11 @@ def construir_resumen_inventario(
                 "ubicacion": f"{producto.rack}-{producto.nivel}-{producto.slot}",
                 "costo_proveedor": producto.costo_proveedor,
                 "precio_venta_sugerido": producto.precio_venta_sugerido,
-                "caducidad": str(producto.caducidad)
+                "caducidad_mas_proxima": str(producto.caducidad)
                 if producto.caducidad
                 else None,
                 "dias_para_caducar": dias_caducidad,
+                "lotes_activos": lotes_resumen,
                 "cantidad_vendida": cantidad_vendida,
                 "cantidad_ingresada_estimada": cantidad_ingresada_estimada,
                 "porcentaje_vendido_inventario": round(porcentaje_vendido, 2),
@@ -595,9 +612,6 @@ def construir_resumen_inventario(
                 "margen_porcentaje": round(margen, 2),
                 "ultima_venta": str(venta.get("ultima_venta"))
                 if venta.get("ultima_venta")
-                else None,
-                "ultima_entrada": str(ingreso.get("ultima_entrada"))
-                if ingreso.get("ultima_entrada")
                 else None,
             }
         )
@@ -667,46 +681,32 @@ def generar_respuesta_fallback(pregunta: str, resumen: Dict[str, Any]) -> str:
         and p.get("ganancia_total", 0) > 0
     ]
 
-    proximos_caducar = sorted(
-        proximos_caducar,
-        key=lambda p: p.get("dias_para_caducar", 9999),
-    )[:5]
-
-    vencidos = vencidos[:5]
-    stock_bajo = stock_bajo[:5]
-    baja_rotacion = baja_rotacion[:5]
-    rentables = sorted(
-        rentables,
-        key=lambda p: p.get("ganancia_total", 0),
-        reverse=True,
-    )[:5]
-
-    respuesta = []
-    respuesta.append("RACKNOVA IA funcionó en modo automático interno.")
-    respuesta.append("")
-    respuesta.append(
-        "El modelo externo de IA no respondió correctamente, pero RackNova generó "
-        "un análisis con su motor interno de reglas usando los datos actuales del inventario."
-    )
-    respuesta.append("")
+    respuesta = [
+        "RACKNOVA IA funcionó en modo automático interno.",
+        "",
+        "El modelo externo no respondió correctamente, pero se generó un análisis con reglas internas de RackNova.",
+        "",
+    ]
 
     if vencidos:
-        respuesta.append("Productos vencidos")
+        respuesta.append("Productos vencidos:")
 
-        for p in vencidos:
+        for p in vencidos[:5]:
             respuesta.append(
-                f"- {p.get('nombre')} ({p.get('sku')}) está vencido desde hace "
-                f"{abs(p.get('dias_para_caducar'))} día(s). "
-                f"Recomendación: retirar/eliminar del inventario y registrar merma. "
+                f"- {p.get('nombre')} ({p.get('sku')}) está vencido. "
+                f"Recomendación: retirar o registrar merma. "
                 f"Ubicación: {p.get('ubicacion')}."
             )
 
         respuesta.append("")
 
     if proximos_caducar:
-        respuesta.append("Productos próximos a caducar")
+        respuesta.append("Productos próximos a caducar:")
 
-        for p in proximos_caducar:
+        for p in sorted(
+            proximos_caducar,
+            key=lambda x: x.get("dias_para_caducar", 9999),
+        )[:5]:
             dias = p.get("dias_para_caducar")
 
             if dias <= 5:
@@ -720,56 +720,51 @@ def generar_respuesta_fallback(pregunta: str, resumen: Dict[str, Any]) -> str:
 
             respuesta.append(
                 f"- {p.get('nombre')} ({p.get('sku')}) caduca en {dias} día(s). "
-                f"Recomendación: mover a una posición visible y considerar descuento del {descuento}%. "
-                f"Stock actual: {p.get('stock_actual')} pieza(s)."
+                f"Sugerencia: descuento del {descuento}% y colocarlo visible."
             )
 
         respuesta.append("")
 
     if stock_bajo:
-        respuesta.append("Productos con stock bajo")
+        respuesta.append("Productos con stock bajo:")
 
-        for p in stock_bajo:
+        for p in stock_bajo[:5]:
             respuesta.append(
-                f"- {p.get('nombre')} ({p.get('sku')}) tiene stock bajo. "
-                f"Actual: {p.get('stock_actual')} / mínimo: {p.get('stock_minimo')}. "
-                f"Recomendación: revisar reposición."
+                f"- {p.get('nombre')} ({p.get('sku')}): "
+                f"{p.get('stock_actual')} / mínimo {p.get('stock_minimo')}."
             )
 
         respuesta.append("")
 
     if baja_rotacion:
-        respuesta.append("Productos con baja rotación")
+        respuesta.append("Productos con baja rotación:")
 
-        for p in baja_rotacion:
+        for p in baja_rotacion[:5]:
             respuesta.append(
                 f"- {p.get('nombre')} ({p.get('sku')}) tiene baja rotación. "
-                f"Porcentaje vendido del inventario estimado: "
-                f"{p.get('porcentaje_vendido_inventario', 0)}%. "
-                f"Recomendación: cambiar a una posición más visible y evaluar promoción."
+                f"Evalúa promoción o cambio de ubicación."
             )
 
         respuesta.append("")
 
     if rentables:
-        respuesta.append("Productos rentables")
+        respuesta.append("Productos rentables:")
 
-        for p in rentables:
+        for p in sorted(
+            rentables,
+            key=lambda x: x.get("ganancia_total", 0),
+            reverse=True,
+        )[:5]:
             respuesta.append(
-                f"- {p.get('nombre')} ({p.get('sku')}) tiene buen margen. "
-                f"Margen aproximado: {p.get('margen_porcentaje')}%. "
-                f"Ganancia acumulada: ${round(p.get('ganancia_total', 0), 2)}. "
-                f"Recomendación: mantener seguimiento y disponibilidad."
+                f"- {p.get('nombre')} ({p.get('sku')}) tiene margen de "
+                f"{p.get('margen_porcentaje')}% y ganancia acumulada de "
+                f"${round(p.get('ganancia_total', 0), 2)}."
             )
 
         respuesta.append("")
 
-    if not vencidos and not proximos_caducar and not stock_bajo and not baja_rotacion and not rentables:
-        respuesta.append(
-            "No se detectaron alertas importantes con los datos actuales. "
-            "El inventario parece estable, pero se recomienda seguir registrando entradas "
-            "y salidas para mejorar el análisis."
-        )
+    if len(respuesta) <= 4:
+        respuesta.append("No se detectaron alertas importantes con los datos actuales.")
 
     return "\n".join(respuesta)
 
@@ -786,30 +781,23 @@ def llamar_deepseek(pregunta: str, resumen: Dict[str, Any]) -> str:
     model = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
     system_prompt = """
-Eres RACKNOVA IA, un asistente experto en inventarios, almacenes, caducidad,
-rotación, descuentos, rentabilidad y decisiones de compra.
+Eres RACKNOVA IA, un asistente experto en inventarios, caducidad, rotación,
+descuentos, rentabilidad, lotes FEFO y decisiones de compra.
 
-Reglas estrictas:
-- Responde siempre en español.
-- Usa únicamente los datos enviados en el resumen del inventario.
-- No inventes productos, precios, ventas ni cantidades.
-- Si falta información, dilo claramente.
-- No digas que tienes acceso directo a la base de datos.
-- No recomiendes descuento para productos vencidos; para vencidos recomienda retirar, eliminar o registrar merma.
-- Para productos próximos a caducar, puedes sugerir descuento:
-  1 a 5 días = 40%
-  6 a 10 días = 30%
-  11 a 15 días = 20%
-  16 a 30 días = 10%
-- Si el usuario pregunta qué comprar, prioriza stock bajo, buena venta, buen margen y buena rotación.
-- Si el usuario pregunta qué mover de lugar, prioriza productos sin venta o con baja rotación.
-- Responde como asesor ejecutivo, no como reporte técnico largo.
-- No uses demasiadas viñetas.
-- No uses asteriscos de Markdown como **texto** o *viñetas*.
-- Evita listas largas. Si hay muchos productos, menciona solo los 3 más importantes y resume el resto.
-- Usa párrafos cortos y claros.
-- Termina con una recomendación concreta.
-- Tu respuesta final nunca debe estar vacía.
+Responde siempre en español.
+Usa únicamente los datos enviados.
+No inventes productos, precios, ventas ni cantidades.
+
+Para vencidos recomienda retirar o registrar merma, no descuento.
+Para próximos a caducar puedes sugerir:
+1 a 5 días = 40%
+6 a 10 días = 30%
+11 a 15 días = 20%
+16 a 30 días = 10%
+
+Responde como asesor ejecutivo, breve y accionable.
+No uses Markdown pesado ni listas largas.
+Cuando haya muchos productos, menciona máximo 3 productos principales.
 """
 
     user_prompt = f"""
@@ -819,11 +807,7 @@ Pregunta del usuario:
 Resumen del inventario en JSON:
 {json.dumps(resumen, ensure_ascii=False, default=str)}
 
-Responde en español con estilo ejecutivo.
-No uses Markdown pesado.
-No uses listas largas.
-Si hay muchos productos, menciona máximo 3 productos principales y después da una conclusión general.
-La respuesta debe ser clara, breve y útil para tomar decisiones.
+Responde en español con estilo ejecutivo, claro y breve.
 """
 
     payload = {
@@ -860,13 +844,10 @@ La respuesta debe ser clara, breve y útil para tomar decisiones.
             raw = response.read().decode("utf-8")
             data = json.loads(raw)
 
-        message = data.get("choices", [{}])[0].get("message", {})
-        content = message.get("content")
+        content = data.get("choices", [{}])[0].get("message", {}).get("content")
 
         if content and content.strip():
             return content.strip()
-
-        print("⚠️ DeepSeek respondió vacío. Respuesta completa:", data)
 
         return generar_respuesta_fallback(pregunta, resumen)
 
@@ -890,7 +871,7 @@ La respuesta debe ser clara, breve y útil para tomar decisiones.
 
 
 # ==========================================================
-# ENDPOINTS PRINCIPALES
+# ENDPOINTS BASE
 # ==========================================================
 
 @app.get("/")
@@ -902,11 +883,10 @@ def home():
 def check_db(session: SessionDep):
     try:
         result = session.exec(text("SHOW TABLES;")).all()
-        tablas = [r[0] for r in result]
 
         return {
             "conexion": "exitosa",
-            "tablas": tablas,
+            "tablas": [r[0] for r in result],
         }
 
     except Exception as e:
@@ -915,17 +895,13 @@ def check_db(session: SessionDep):
 
 
 # ==========================================================
-# ENDPOINTS CATÁLOGO HISTÓRICO
+# CATÁLOGO HISTÓRICO
+# SOLO SKU, NOMBRE Y DESCRIPCIÓN
 # ==========================================================
 
 @app.get("/catalogo/productos", response_model=List[ProductoCatalogo])
 def listar_catalogo(session: SessionDep):
-    try:
-        return session.exec(select(ProductoCatalogo)).all()
-
-    except Exception as e:
-        print(f"❌ List catalog error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return session.exec(select(ProductoCatalogo)).all()
 
 
 @app.get("/catalogo/productos/buscar", response_model=List[ProductoCatalogo])
@@ -933,66 +909,57 @@ def buscar_catalogo(
     session: SessionDep,
     query: str = Query(..., min_length=1),
 ):
-    try:
-        q = f"%{query.strip()}%"
+    q = f"%{query.strip()}%"
 
-        statement = select(ProductoCatalogo).where(
-            (ProductoCatalogo.sku.like(q))
-            | (ProductoCatalogo.nombre.like(q))
-        )
+    statement = select(ProductoCatalogo).where(
+        (ProductoCatalogo.sku.like(q))
+        | (ProductoCatalogo.nombre.like(q))
+    )
 
-        return session.exec(statement).all()
-
-    except Exception as e:
-        print(f"❌ Search catalog error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return session.exec(statement).all()
 
 
-@app.get("/catalogo/productos/sku/{sku}", response_model=ProductoCatalogo)
-def obtener_catalogo_por_sku(sku: str, session: SessionDep):
-    catalogo = session.exec(
-        select(ProductoCatalogo).where(ProductoCatalogo.sku == sku)
-    ).first()
+@app.post("/catalogo/productos", response_model=ProductoCatalogo)
+def crear_catalogo(producto: ProductoCatalogo, session: SessionDep):
+    catalogo = crear_catalogo_si_no_existe(
+        session=session,
+        sku=producto.sku,
+        nombre=producto.nombre,
+        descripcion=producto.descripcion,
+    )
 
-    if not catalogo:
-        raise HTTPException(status_code=404, detail="Producto histórico no encontrado")
+    session.commit()
+    session.refresh(catalogo)
 
     return catalogo
 
 
-@app.post("/catalogo/productos", response_model=ProductoCatalogo)
-def crear_o_actualizar_catalogo(producto: ProductoCatalogo, session: SessionDep):
-    try:
-        stock_minimo = normalizar_stock_minimo(producto.stock_minimo)
-        stock_alto = normalizar_stock_alto(stock_minimo, producto.stock_alto)
+# ==========================================================
+# LOTES
+# ==========================================================
 
-        catalogo = actualizar_o_crear_catalogo(
-            session=session,
-            sku=producto.sku,
-            nombre=producto.nombre,
-            descripcion=producto.descripcion,
-            costo_proveedor=producto.ultimo_costo_proveedor
-            or producto.costo_promedio
-            or 0,
-            precio_venta_sugerido=producto.precio_venta_sugerido or 0,
-            caducidad=producto.caducidad,
-            stock_minimo=stock_minimo,
-            stock_alto=stock_alto,
-            cantidad_ingresada=producto.total_ingresado or 0,
-        )
+@app.get("/productos/{sku}/lotes", response_model=List[ProductoLote])
+def listar_lotes_producto(sku: str, session: SessionDep):
+    return obtener_lotes_activos(session, sku)
 
-        session.commit()
-        session.refresh(catalogo)
 
-        return catalogo
+@app.get("/lotes", response_model=List[ProductoLote])
+def listar_lotes(session: SessionDep):
+    lotes = session.exec(select(ProductoLote)).all()
 
-    except Exception as e:
-        print(f"❌ Create/update catalog error: {e}")
-        raise
+    return sorted(
+        lotes,
+        key=lambda lote: (
+            lote.sku,
+            lote.caducidad is None,
+            lote.caducidad or date.max,
+            lote.fecha_ingreso,
+        ),
+    )
 
 
 # ==========================================================
-# ENDPOINT IA
+# IA
 # ==========================================================
 
 @app.post("/ia/inventario")
@@ -1008,7 +975,7 @@ def analizar_inventario_con_ia(data: IARequest, session: SessionDep):
     productos = session.exec(select(Producto)).all()
     movimientos = session.exec(select(Movimiento)).all()
 
-    resumen = construir_resumen_inventario(productos, movimientos)
+    resumen = construir_resumen_inventario(productos, movimientos, session)
 
     fuente = "deepseek"
     advertencia = None
@@ -1056,7 +1023,7 @@ def analizar_inventario_con_ia(data: IARequest, session: SessionDep):
 
 
 # ==========================================================
-# ENDPOINTS PRODUCTOS
+# PRODUCTOS
 # ==========================================================
 
 @app.post("/productos", response_model=Producto)
@@ -1066,7 +1033,13 @@ def crear_producto(producto: Producto, session: SessionDep):
         producto.nombre = normalizar_texto(producto.nombre)
         producto.descripcion = normalizar_texto(producto.descripcion) or None
 
-        producto.cantidad = producto.cantidad if producto.cantidad and producto.cantidad > 0 else 0
+        producto.rack = normalizar_texto(producto.rack)
+        producto.nivel = normalizar_texto(producto.nivel)
+        producto.slot = normalizar_texto(producto.slot)
+
+        producto.cantidad = (
+            producto.cantidad if producto.cantidad and producto.cantidad > 0 else 0
+        )
         producto.costo_proveedor = producto.costo_proveedor or 0
         producto.precio_venta_sugerido = producto.precio_venta_sugerido or 0
         producto.stock_minimo = normalizar_stock_minimo(producto.stock_minimo)
@@ -1074,10 +1047,6 @@ def crear_producto(producto: Producto, session: SessionDep):
             producto.stock_minimo,
             producto.stock_alto,
         )
-
-        producto.rack = normalizar_texto(producto.rack)
-        producto.nivel = normalizar_texto(producto.nivel)
-        producto.slot = normalizar_texto(producto.slot)
 
         if not producto.sku or not producto.nombre:
             raise HTTPException(
@@ -1097,6 +1066,18 @@ def crear_producto(producto: Producto, session: SessionDep):
             producto.nombre,
         )
 
+        if catalogo:
+            producto.sku = catalogo.sku
+            producto.nombre = catalogo.nombre
+            producto.descripcion = catalogo.descripcion
+        else:
+            catalogo = crear_catalogo_si_no_existe(
+                session=session,
+                sku=producto.sku,
+                nombre=producto.nombre,
+                descripcion=producto.descripcion,
+            )
+
         producto_existente = buscar_producto_por_sku_o_nombre(
             session,
             producto.sku,
@@ -1104,29 +1085,10 @@ def crear_producto(producto: Producto, session: SessionDep):
         )
 
         # ======================================================
-        # SI EXISTE EN CATÁLOGO:
-        # SKU, nombre y descripción se fuerzan desde el histórico.
-        # Esto evita que se guarde otro nombre con el mismo SKU
-        # o que se guarde otro SKU con el mismo nombre.
-        # ======================================================
-        if catalogo:
-            producto.sku = catalogo.sku
-            producto.nombre = catalogo.nombre
-            producto.descripcion = catalogo.descripcion
-
-            producto_existente = buscar_producto_por_sku_o_nombre(
-                session,
-                producto.sku,
-                producto.nombre,
-            )
-
-        # ======================================================
-        # SI EXISTE EN INVENTARIO:
-        # RESTOCK INTELIGENTE
-        # - conserva SKU, nombre, descripción y ubicación
-        # - suma cantidad
-        # - calcula costo promedio
-        # - actualiza campos editables
+        # RESTOCK:
+        # Si ya existe en inventario, conserva identidad y ubicación.
+        # Solo suma cantidad, recalcula costo promedio, actualiza precio/stock
+        # y crea lote nuevo con su propia caducidad.
         # ======================================================
         if producto_existente:
             cantidad_anterior = producto_existente.cantidad or 0
@@ -1142,33 +1104,32 @@ def crear_producto(producto: Producto, session: SessionDep):
             producto_existente.cantidad = cantidad_anterior + cantidad_nueva
             producto_existente.costo_proveedor = nuevo_costo_promedio
             producto_existente.precio_venta_sugerido = producto.precio_venta_sugerido
-            producto_existente.caducidad = producto.caducidad
             producto_existente.stock_minimo = producto.stock_minimo
             producto_existente.stock_alto = producto.stock_alto
+
+            producto_existente.sku = catalogo.sku
+            producto_existente.nombre = catalogo.nombre
+            producto_existente.descripcion = catalogo.descripcion
+
             producto_existente.ultima_actualizacion = mexico_now()
 
-            # Identidad fija.
-            # Si hay catálogo, se fuerza la identidad histórica.
-            # Si no hay catálogo, se conserva la identidad actual del producto.
-            if catalogo:
-                producto_existente.sku = catalogo.sku
-                producto_existente.nombre = catalogo.nombre
-                producto_existente.descripcion = catalogo.descripcion
+            crear_lote(
+                session=session,
+                producto=producto_existente,
+                cantidad=cantidad_nueva,
+                costo_unitario=producto.costo_proveedor,
+                caducidad=producto.caducidad,
+            )
+
+            producto_existente.caducidad = (
+                obtener_caducidad_mas_proxima(session, producto_existente.sku)
+                or producto.caducidad
+            )
 
             session.add(producto_existente)
 
-            actualizar_o_crear_catalogo(
-                session=session,
-                sku=producto_existente.sku,
-                nombre=producto_existente.nombre,
-                descripcion=producto_existente.descripcion,
-                costo_proveedor=producto.costo_proveedor,
-                precio_venta_sugerido=producto.precio_venta_sugerido,
-                caducidad=producto.caducidad,
-                stock_minimo=producto.stock_minimo,
-                stock_alto=producto.stock_alto,
-                cantidad_ingresada=cantidad_nueva,
-            )
+            catalogo.ultima_actualizacion = mexico_now()
+            session.add(catalogo)
 
             session.commit()
             session.refresh(producto_existente)
@@ -1176,8 +1137,7 @@ def crear_producto(producto: Producto, session: SessionDep):
             return producto_existente
 
         # ======================================================
-        # PRODUCTO NUEVO:
-        # valida ubicación libre y crea producto.
+        # PRODUCTO NUEVO O PRODUCTO HISTÓRICO QUE YA NO ESTÁ EN INVENTARIO
         # ======================================================
         if not producto.rack or not producto.nivel or not producto.slot:
             raise HTTPException(
@@ -1201,23 +1161,26 @@ def crear_producto(producto: Producto, session: SessionDep):
                 ),
             )
 
+        producto.sku = catalogo.sku
+        producto.nombre = catalogo.nombre
+        producto.descripcion = catalogo.descripcion
+
         producto.fecha_registro = mexico_now()
         producto.ultima_actualizacion = mexico_now()
 
         session.add(producto)
+        session.flush()
 
-        actualizar_o_crear_catalogo(
+        crear_lote(
             session=session,
-            sku=producto.sku,
-            nombre=producto.nombre,
-            descripcion=producto.descripcion,
-            costo_proveedor=producto.costo_proveedor,
-            precio_venta_sugerido=producto.precio_venta_sugerido,
+            producto=producto,
+            cantidad=producto.cantidad,
+            costo_unitario=producto.costo_proveedor,
             caducidad=producto.caducidad,
-            stock_minimo=producto.stock_minimo,
-            stock_alto=producto.stock_alto,
-            cantidad_ingresada=producto.cantidad,
         )
+
+        catalogo.ultima_actualizacion = mexico_now()
+        session.add(catalogo)
 
         session.commit()
         session.refresh(producto)
@@ -1234,12 +1197,7 @@ def crear_producto(producto: Producto, session: SessionDep):
 
 @app.get("/productos", response_model=List[Producto])
 def listar_productos(session: SessionDep):
-    try:
-        return session.exec(select(Producto)).all()
-
-    except Exception as e:
-        print(f"❌ List products error: {e}")
-        raise
+    return session.exec(select(Producto)).all()
 
 
 @app.put("/productos/{sku}", response_model=Producto)
@@ -1258,27 +1216,25 @@ def update_producto(sku: str, updated: Producto, session: SessionDep):
             db_producto.nombre,
         )
 
-        # Identidad fija si existe en catálogo.
         if catalogo:
             db_producto.sku = catalogo.sku
             db_producto.nombre = catalogo.nombre
             db_producto.descripcion = catalogo.descripcion
-        else:
-            # Si no existe en catálogo, conserva identidad actual.
-            db_producto.descripcion = db_producto.descripcion
 
         db_producto.cantidad = updated.cantidad
         db_producto.costo_proveedor = updated.costo_proveedor or 0
         db_producto.precio_venta_sugerido = updated.precio_venta_sugerido or 0
-        db_producto.caducidad = updated.caducidad
         db_producto.stock_minimo = normalizar_stock_minimo(updated.stock_minimo)
         db_producto.stock_alto = normalizar_stock_alto(
             db_producto.stock_minimo,
             updated.stock_alto,
         )
 
-        # La ubicación solo se actualiza si no está vacía.
-        # Más adelante, cuando Dashboard sea solo visual, casi no se usará.
+        db_producto.caducidad = (
+            obtener_caducidad_mas_proxima(session, db_producto.sku)
+            or updated.caducidad
+        )
+
         if updated.rack and updated.nivel and updated.slot:
             db_producto.rack = updated.rack
             db_producto.nivel = updated.nivel
@@ -1287,20 +1243,6 @@ def update_producto(sku: str, updated: Producto, session: SessionDep):
         db_producto.ultima_actualizacion = mexico_now()
 
         session.add(db_producto)
-
-        actualizar_o_crear_catalogo(
-            session=session,
-            sku=db_producto.sku,
-            nombre=db_producto.nombre,
-            descripcion=db_producto.descripcion,
-            costo_proveedor=db_producto.costo_proveedor,
-            precio_venta_sugerido=db_producto.precio_venta_sugerido,
-            caducidad=db_producto.caducidad,
-            stock_minimo=db_producto.stock_minimo,
-            stock_alto=db_producto.stock_alto,
-            cantidad_ingresada=0,
-        )
-
         session.commit()
         session.refresh(db_producto)
 
@@ -1365,11 +1307,10 @@ def registrar_salida_producto(sku: str, salida: SalidaProducto, session: Session
                 detail="No puedes vender más cantidad de la existente",
             )
 
-        registrar_venta_en_catalogo(
+        detalle_lotes = descontar_lotes_fefo(
             session=session,
             sku=db_producto.sku,
-            nombre=db_producto.nombre,
-            cantidad_vendida=salida.cantidad_vendida,
+            cantidad=salida.cantidad_vendida,
         )
 
         db_producto.ultima_actualizacion = mexico_now()
@@ -1378,12 +1319,16 @@ def registrar_salida_producto(sku: str, salida: SalidaProducto, session: Session
             session.delete(db_producto)
         else:
             db_producto.cantidad -= salida.cantidad_vendida
+            db_producto.caducidad = obtener_caducidad_mas_proxima(
+                session,
+                db_producto.sku,
+            )
             session.add(db_producto)
 
         session.commit()
 
         return {
-            "mensaje": "Salida registrada correctamente",
+            "mensaje": "Salida registrada correctamente usando FEFO",
             "sku": sku,
             "cantidad_vendida": salida.cantidad_vendida,
             "precio_venta": salida.precio_venta,
@@ -1391,6 +1336,7 @@ def registrar_salida_producto(sku: str, salida: SalidaProducto, session: Session
             "ingreso_total": salida.ingreso_total,
             "costo_total": salida.costo_total,
             "ganancia": salida.ganancia,
+            "lotes_descontados": detalle_lotes,
         }
 
     except HTTPException:
@@ -1407,28 +1353,18 @@ def registrar_salida_producto(sku: str, salida: SalidaProducto, session: Session
 
 @app.post("/movimientos", response_model=Movimiento)
 def crear_movimiento(mov: Movimiento, session: SessionDep):
-    try:
-        mov.fecha = mexico_now()
+    mov.fecha = mexico_now()
 
-        session.add(mov)
-        session.commit()
-        session.refresh(mov)
+    session.add(mov)
+    session.commit()
+    session.refresh(mov)
 
-        return mov
-
-    except Exception as e:
-        print(f"❌ Create movement error: {e}")
-        raise
+    return mov
 
 
 @app.get("/movimientos", response_model=List[Movimiento])
 def listar_movimientos(session: SessionDep):
-    try:
-        return session.exec(select(Movimiento)).all()
-
-    except Exception as e:
-        print(f"❌ List movements error: {e}")
-        raise
+    return session.exec(select(Movimiento)).all()
 
 
 # ==========================================================
@@ -1437,66 +1373,54 @@ def listar_movimientos(session: SessionDep):
 
 @app.get("/finanzas/resumen")
 def resumen_financiero(session: SessionDep):
-    try:
-        movimientos = session.exec(select(Movimiento)).all()
+    movimientos = session.exec(select(Movimiento)).all()
 
-        ingresos = sum(
-            m.ingreso_total or 0 for m in movimientos if m.accion == "Egreso"
-        )
+    ingresos = sum(
+        m.ingreso_total or 0 for m in movimientos if m.accion == "Egreso"
+    )
 
-        costos = sum(
-            m.costo_total or 0 for m in movimientos if m.accion == "Ingreso"
-        )
+    costos = sum(
+        m.costo_total or 0 for m in movimientos if m.accion == "Ingreso"
+    )
 
-        ganancia = ingresos - costos
-
-        return {
-            "ingresos": ingresos,
-            "costos": costos,
-            "ganancia": ganancia,
-        }
-
-    except Exception as e:
-        print(f"❌ Error obteniendo resumen financiero: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "ingresos": ingresos,
+        "costos": costos,
+        "ganancia": ingresos - costos,
+    }
 
 
 @app.get("/finanzas/grafica")
 def grafica_financiera(session: SessionDep):
-    try:
-        movimientos = session.exec(select(Movimiento)).all()
-        datos = {}
+    movimientos = session.exec(select(Movimiento)).all()
+    datos = {}
 
-        for m in movimientos:
-            fecha_key = m.fecha.strftime("%Y-%m-%d")
+    for m in movimientos:
+        fecha_key = m.fecha.strftime("%Y-%m-%d")
 
-            if fecha_key not in datos:
-                datos[fecha_key] = {
-                    "fecha": fecha_key,
-                    "ingresos": 0,
-                    "costos": 0,
-                    "ganancia": 0,
-                }
+        if fecha_key not in datos:
+            datos[fecha_key] = {
+                "fecha": fecha_key,
+                "ingresos": 0,
+                "costos": 0,
+                "ganancia": 0,
+            }
 
-            if m.accion == "Ingreso":
-                datos[fecha_key]["costos"] += m.costo_total or 0
+        if m.accion == "Ingreso":
+            datos[fecha_key]["costos"] += m.costo_total or 0
 
-            elif m.accion == "Egreso":
-                datos[fecha_key]["ingresos"] += m.ingreso_total or 0
+        elif m.accion == "Egreso":
+            datos[fecha_key]["ingresos"] += m.ingreso_total or 0
 
-            datos[fecha_key]["ganancia"] = (
-                datos[fecha_key]["ingresos"] - datos[fecha_key]["costos"]
-            )
+        datos[fecha_key]["ganancia"] = (
+            datos[fecha_key]["ingresos"] - datos[fecha_key]["costos"]
+        )
 
-        return list(datos.values())
-
-    except Exception as e:
-        print(f"❌ Error obteniendo gráfica financiera: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return list(datos.values())
 
 
 # ==========================================================
-# LOGIN
+# LOGIN / ADMIN
 # ==========================================================
 
 @app.post("/auth/login")
@@ -1516,29 +1440,17 @@ def login(data: LoginRequest):
     raise HTTPException(status_code=401, detail="Credenciales incorrectas")
 
 
-# ==========================================================
-# ADMIN
-# ==========================================================
-
 @app.delete("/movimientos/{id_mov}")
 def eliminar_movimiento(id_mov: int, session: SessionDep):
-    try:
-        mov = session.get(Movimiento, id_mov)
+    mov = session.get(Movimiento, id_mov)
 
-        if not mov:
-            raise HTTPException(status_code=404, detail="Movimiento no encontrado")
+    if not mov:
+        raise HTTPException(status_code=404, detail="Movimiento no encontrado")
 
-        session.delete(mov)
-        session.commit()
+    session.delete(mov)
+    session.commit()
 
-        return {"mensaje": "Movimiento eliminado"}
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-        print(f"❌ Delete movement error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"mensaje": "Movimiento eliminado"}
 
 
 @app.delete("/admin/clear-all")
@@ -1551,10 +1463,12 @@ def limpiar_toda_la_base(confirm: str, session: SessionDep):
 
     try:
         session.exec(text("DELETE FROM movimiento"))
+        session.exec(text("DELETE FROM producto_lote"))
         session.exec(text("DELETE FROM producto"))
         session.exec(text("DELETE FROM producto_catalogo"))
 
         session.exec(text("ALTER TABLE movimiento AUTO_INCREMENT = 1"))
+        session.exec(text("ALTER TABLE producto_lote AUTO_INCREMENT = 1"))
         session.exec(text("ALTER TABLE producto AUTO_INCREMENT = 1"))
         session.exec(text("ALTER TABLE producto_catalogo AUTO_INCREMENT = 1"))
 
@@ -1564,6 +1478,7 @@ def limpiar_toda_la_base(confirm: str, session: SessionDep):
             "mensaje": "Base de datos limpiada correctamente",
             "tablas_limpiadas": [
                 "movimiento",
+                "producto_lote",
                 "producto",
                 "producto_catalogo",
             ],
