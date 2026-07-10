@@ -190,6 +190,7 @@ def agregar_columna_si_falta(
     columna: str,
     definicion_sql: str,
 ):
+    
     columnas = obtener_columnas(session, tabla)
 
     if columna.lower() not in columnas:
@@ -200,7 +201,26 @@ def agregar_columna_si_falta(
         session.commit()
         print(f"✅ Columna {tabla}.{columna} agregada")
 
+def modificar_columna_si_existe(
+    session: Session,
+    tabla: str,
+    columna: str,
+    definicion_sql: str,
+):
+    columnas = obtener_columnas(session, tabla)
 
+    if columna.lower() in columnas:
+        try:
+            print(f"Ajustando columna heredada {tabla}.{columna}...")
+            session.exec(
+                text(f"ALTER TABLE {tabla} MODIFY COLUMN {columna} {definicion_sql};")
+            )
+            session.commit()
+            print(f"✅ Columna {tabla}.{columna} ajustada")
+        except Exception as e:
+            session.rollback()
+            print(f"⚠️ No se pudo ajustar {tabla}.{columna}: {e}")
+            
 def ejecutar_migraciones_ligeras():
     with Session(engine) as session:
         agregar_columna_si_falta(
@@ -263,7 +283,69 @@ def ejecutar_migraciones_ligeras():
             "movimiento",
             "ganancia",
             "FLOAT DEFAULT 0",
+        )        # ======================================================
+        # Limpieza de columnas heredadas del catálogo anterior
+        # El catálogo actual solo usa SKU, nombre y descripción,
+        # pero estas columnas pueden seguir existiendo en MySQL.
+        # Las dejamos con DEFAULT para que no rompan los INSERT.
+        # ======================================================
+
+        modificar_columna_si_existe(
+            session,
+            "producto_catalogo",
+            "ultimo_costo_proveedor",
+            "FLOAT DEFAULT 0",
         )
+
+        modificar_columna_si_existe(
+            session,
+            "producto_catalogo",
+            "costo_promedio",
+            "FLOAT DEFAULT 0",
+        )
+
+        modificar_columna_si_existe(
+            session,
+            "producto_catalogo",
+            "precio_venta_sugerido",
+            "FLOAT DEFAULT 0",
+        )
+
+        modificar_columna_si_existe(
+            session,
+            "producto_catalogo",
+            "caducidad",
+            "DATE NULL",
+        )
+
+        modificar_columna_si_existe(
+            session,
+            "producto_catalogo",
+            "stock_minimo",
+            "INT DEFAULT 10",
+        )
+
+        modificar_columna_si_existe(
+            session,
+            "producto_catalogo",
+            "stock_alto",
+            "INT DEFAULT 30",
+        )
+
+        modificar_columna_si_existe(
+            session,
+            "producto_catalogo",
+            "total_ingresado",
+            "INT DEFAULT 0",
+        )
+
+        modificar_columna_si_existe(
+            session,
+            "producto_catalogo",
+            "total_vendido",
+            "INT DEFAULT 0",
+        )
+        
 
 
 # ==========================================================
