@@ -1,5 +1,6 @@
 # ==========================================================
 # RACKNOVA API — INVENTARIO + CATÁLOGO + LOTES FEFO + IA
+# Compatible con MySQL/Railway y PostgreSQL/Supabase
 # ==========================================================
 
 from pydantic import BaseModel
@@ -10,15 +11,16 @@ from datetime import datetime, date
 from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
+
 import sys
 import os
 import json
 import urllib.request
 import urllib.error
 
-
 try:
     from database import engine, get_session
+
     print("✅ Database module imported successfully")
 except Exception as e:
     print(f"❌ ERROR importing database: {e}")
@@ -43,7 +45,10 @@ def normalizar_stock_minimo(stock_minimo: Optional[int]) -> int:
     return 10
 
 
-def normalizar_stock_alto(stock_minimo: Optional[int], stock_alto: Optional[int]) -> int:
+def normalizar_stock_alto(
+    stock_minimo: Optional[int],
+    stock_alto: Optional[int],
+) -> int:
     minimo = normalizar_stock_minimo(stock_minimo)
 
     if stock_alto is not None and stock_alto > minimo:
@@ -143,6 +148,7 @@ class Movimiento(SQLModel, table=True):
     producto: str
     cantidad: int
     ubicacion: str
+
     usuario: str = "Sistema"
     fecha: datetime = Field(default_factory=mexico_now)
 
@@ -158,9 +164,16 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class CreateUserRequest(BaseModel):
+    usuario: str
+    contrasena: str
+    rol: str = "operator"
+
+
 class SalidaProducto(SQLModel):
     cantidad_vendida: int
     precio_venta: float
+
     costo_proveedor: float = 0
     ingreso_total: float = 0
     costo_total: float = 0
@@ -172,13 +185,37 @@ class IARequest(BaseModel):
 
 
 # ==========================================================
-# MIGRACIONES LIGERAS
+# COMPATIBILIDAD MYSQL / POSTGRESQL
 # ==========================================================
+
+def es_postgres() -> bool:
+    return engine.dialect.name == "postgresql"
+
+
+def es_mysql() -> bool:
+    return engine.dialect.name == "mysql"
+
 
 def obtener_columnas(session: Session, tabla: str) -> List[str]:
     try:
+        if es_postgres():
+            result = session.exec(
+                text(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                    AND table_name = :tabla
+                    ORDER BY ordinal_position;
+                    """
+                ).bindparams(tabla=tabla)
+            ).all()
+
+            return [str(row[0]).lower() for row in result]
+
         result = session.exec(text(f"DESCRIBE {tabla};")).all()
         return [str(row[0]).lower() for row in result]
+
     except Exception as e:
         print(f"⚠️ No se pudieron leer columnas de {tabla}: {e}")
         return []
@@ -190,16 +227,23 @@ def agregar_columna_si_falta(
     columna: str,
     definicion_sql: str,
 ):
-    
     columnas = obtener_columnas(session, tabla)
 
     if columna.lower() not in columnas:
-        print(f"Agregando columna {tabla}.{columna}...")
-        session.exec(
-            text(f"ALTER TABLE {tabla} ADD COLUMN {columna} {definicion_sql};")
-        )
-        session.commit()
-        print(f"✅ Columna {tabla}.{columna} agregada")
+        try:
+            print(f"Agregando columna {tabla}.{columna}...")
+
+            session.exec(
+                text(f"ALTER TABLE {tabla} ADD COLUMN {columna} {definicion_sql};")
+            )
+
+            session.commit()
+            print(f"✅ Columna {tabla}.{columna} agregada")
+
+        except Exception as e:
+            session.rollback()
+            print(f"⚠️ No se pudo agregar {tabla}.{columna}: {e}")
+
 
 def modificar_columna_si_existe(
     session: Session,
@@ -209,18 +253,33 @@ def modificar_columna_si_existe(
 ):
     columnas = obtener_columnas(session, tabla)
 
-    if columna.lower() in columnas:
-        try:
-            print(f"Ajustando columna heredada {tabla}.{columna}...")
-            session.exec(
-                text(f"ALTER TABLE {tabla} MODIFY COLUMN {columna} {definicion_sql};")
+    if columna.lower() not in columnas:
+        return
+
+    try:
+        print(f"Ajustando columna heredada {tabla}.{columna}...")
+
+        if es_postgres():
+            # En Supabase/PostgreSQL normalmente no necesitaremos ajustar
+            # columnas heredadas porque la base arranca limpia.
+            # Evitamos usar MODIFY COLUMN porque es sintaxis exclusiva de MySQL.
+            print(
+                f"ℹ️ PostgreSQL detectado. Se omite MODIFY COLUMN en {tabla}.{columna}."
             )
-            session.commit()
-            print(f"✅ Columna {tabla}.{columna} ajustada")
-        except Exception as e:
-            session.rollback()
-            print(f"⚠️ No se pudo ajustar {tabla}.{columna}: {e}")
-            
+            return
+
+        session.exec(
+            text(f"ALTER TABLE {tabla} MODIFY COLUMN {columna} {definicion_sql};")
+        )
+
+        session.commit()
+        print(f"✅ Columna {tabla}.{columna} ajustada")
+
+    except Exception as e:
+        session.rollback()
+        print(f"⚠️ No se pudo ajustar {tabla}.{columna}: {e}")
+
+
 def ejecutar_migraciones_ligeras():
     with Session(engine) as session:
         agregar_columna_si_falta(
@@ -229,24 +288,28 @@ def ejecutar_migraciones_ligeras():
             "descripcion",
             "TEXT NULL",
         )
+
         agregar_columna_si_falta(
             session,
             "producto",
             "precio_venta_sugerido",
             "FLOAT DEFAULT 0",
         )
+
         agregar_columna_si_falta(
             session,
             "producto",
             "caducidad",
             "DATE NULL",
         )
+
         agregar_columna_si_falta(
             session,
             "producto",
             "stock_minimo",
             "INT NOT NULL DEFAULT 10",
         )
+
         agregar_columna_si_falta(
             session,
             "producto",
@@ -260,34 +323,39 @@ def ejecutar_migraciones_ligeras():
             "costo_proveedor",
             "FLOAT DEFAULT 0",
         )
+
         agregar_columna_si_falta(
             session,
             "movimiento",
             "precio_venta",
             "FLOAT DEFAULT 0",
         )
+
         agregar_columna_si_falta(
             session,
             "movimiento",
             "ingreso_total",
             "FLOAT DEFAULT 0",
         )
+
         agregar_columna_si_falta(
             session,
             "movimiento",
             "costo_total",
             "FLOAT DEFAULT 0",
         )
+
         agregar_columna_si_falta(
             session,
             "movimiento",
             "ganancia",
             "FLOAT DEFAULT 0",
-        )        # ======================================================
-        # Limpieza de columnas heredadas del catálogo anterior
-        # El catálogo actual solo usa SKU, nombre y descripción,
-        # pero estas columnas pueden seguir existiendo en MySQL.
-        # Las dejamos con DEFAULT para que no rompan los INSERT.
+        )
+
+        # ======================================================
+        # Limpieza de columnas heredadas del catálogo anterior.
+        # Esto solo aplica si vienes de una base MySQL vieja.
+        # En Supabase/PostgreSQL se omite el MODIFY COLUMN.
         # ======================================================
 
         modificar_columna_si_existe(
@@ -345,7 +413,6 @@ def ejecutar_migraciones_ligeras():
             "total_vendido",
             "INT DEFAULT 0",
         )
-        
 
 
 # ==========================================================
@@ -356,9 +423,13 @@ def ejecutar_migraciones_ligeras():
 def on_startup():
     try:
         print("Creating database tables...")
+        print(f"Motor SQL detectado: {engine.dialect.name}")
+
         SQLModel.metadata.create_all(engine)
         ejecutar_migraciones_ligeras()
+
         print("✅ Database tables created/updated successfully")
+
     except Exception as e:
         print(f"❌ ERROR creating/updating tables: {e}")
         sys.exit(1)
@@ -415,6 +486,7 @@ def crear_catalogo_si_no_existe(
     )
 
     session.add(catalogo)
+
     return catalogo
 
 
@@ -501,6 +573,7 @@ def crear_lote(
     )
 
     session.add(lote)
+
     return lote
 
 
@@ -643,14 +716,12 @@ def construir_resumen_inventario(
         ganancia_total = venta.get("ganancia_total", 0)
 
         margen = 0
-
         if ingreso_total > 0:
             margen = (ganancia_total / ingreso_total) * 100
 
         cantidad_ingresada_estimada = producto.cantidad + cantidad_vendida
 
         porcentaje_vendido = 0
-
         if cantidad_ingresada_estimada > 0:
             porcentaje_vendido = (
                 cantidad_vendida / cantidad_ingresada_estimada
@@ -666,8 +737,12 @@ def construir_resumen_inventario(
                     {
                         "id_lote": lote.id_lote,
                         "cantidad_actual": lote.cantidad_actual,
-                        "caducidad": str(lote.caducidad) if lote.caducidad else None,
-                        "dias_para_caducar": calcular_dias_caducidad(lote.caducidad),
+                        "caducidad": str(lote.caducidad)
+                        if lote.caducidad
+                        else None,
+                        "dias_para_caducar": calcular_dias_caducidad(
+                            lote.caducidad
+                        ),
                     }
                 )
 
@@ -732,24 +807,28 @@ def generar_respuesta_fallback(pregunta: str, resumen: Dict[str, Any]) -> str:
     productos = resumen.get("productos", [])
 
     vencidos = [
-        p for p in productos
+        p
+        for p in productos
         if p.get("dias_para_caducar") is not None
         and p.get("dias_para_caducar") < 0
     ]
 
     proximos_caducar = [
-        p for p in productos
+        p
+        for p in productos
         if p.get("dias_para_caducar") is not None
         and 0 <= p.get("dias_para_caducar") <= 30
     ]
 
     stock_bajo = [
-        p for p in productos
-        if p.get("stock_actual", 0) < p.get("stock_minimo", 10)
+        p
+        for p in productos
+        if p.get("stock_actual", 0) <= p.get("stock_minimo", 10)
     ]
 
     baja_rotacion = [
-        p for p in productos
+        p
+        for p in productos
         if p.get("stock_actual", 0) > 0
         and (
             p.get("cantidad_vendida", 0) == 0
@@ -758,7 +837,8 @@ def generar_respuesta_fallback(pregunta: str, resumen: Dict[str, Any]) -> str:
     ]
 
     rentables = [
-        p for p in productos
+        p
+        for p in productos
         if p.get("margen_porcentaje", 0) >= 30
         and p.get("ganancia_total", 0) > 0
     ]
@@ -863,13 +943,11 @@ def llamar_deepseek(pregunta: str, resumen: Dict[str, Any]) -> str:
     model = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
     system_prompt = """
-Eres RACKNOVA IA, un asistente experto en inventarios, caducidad, rotación,
-descuentos, rentabilidad, lotes FEFO y decisiones de compra.
+Eres RACKNOVA IA, un asistente experto en inventarios, caducidad, rotación, descuentos, rentabilidad, lotes FEFO y decisiones de compra.
 
 Responde siempre en español.
 Usa únicamente los datos enviados.
 No inventes productos, precios, ventas ni cantidades.
-
 Para vencidos recomienda retirar o registrar merma, no descuento.
 Para próximos a caducar puedes sugerir:
 1 a 5 días = 40%
@@ -926,16 +1004,15 @@ Responde en español con estilo ejecutivo, claro y breve.
             raw = response.read().decode("utf-8")
             data = json.loads(raw)
 
-        content = data.get("choices", [{}])[0].get("message", {}).get("content")
+            content = data.get("choices", [{}])[0].get("message", {}).get("content")
 
-        if content and content.strip():
-            return content.strip()
+            if content and content.strip():
+                return content.strip()
 
-        return generar_respuesta_fallback(pregunta, resumen)
+            return generar_respuesta_fallback(pregunta, resumen)
 
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8")
-
         print("❌ Error DeepSeek:", e.code, error_body)
 
         raise HTTPException(
@@ -964,10 +1041,29 @@ def home():
 @app.get("/check_db")
 def check_db(session: SessionDep):
     try:
+        if es_postgres():
+            result = session.exec(
+                text(
+                    """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public'
+                    ORDER BY table_name;
+                    """
+                )
+            ).all()
+
+            return {
+                "conexion": "exitosa",
+                "database": "postgresql",
+                "tablas": [r[0] for r in result],
+            }
+
         result = session.exec(text("SHOW TABLES;")).all()
 
         return {
             "conexion": "exitosa",
+            "database": "mysql",
             "tablas": [r[0] for r in result],
         }
 
@@ -1014,6 +1110,79 @@ def crear_catalogo(producto: ProductoCatalogo, session: SessionDep):
     session.refresh(catalogo)
 
     return catalogo
+
+
+@app.put("/catalogo/productos/{sku}", response_model=ProductoCatalogo)
+def actualizar_catalogo(
+    sku: str,
+    producto: ProductoCatalogo,
+    session: SessionDep,
+):
+    catalogo = session.exec(
+        select(ProductoCatalogo).where(ProductoCatalogo.sku == sku)
+    ).first()
+
+    if not catalogo:
+        raise HTTPException(status_code=404, detail="Producto de catálogo no encontrado")
+
+    nuevo_nombre = normalizar_texto(producto.nombre)
+    nueva_descripcion = normalizar_texto(producto.descripcion) or None
+
+    if not nuevo_nombre:
+        raise HTTPException(status_code=400, detail="El nombre es obligatorio")
+
+    catalogo.nombre = nuevo_nombre
+    catalogo.descripcion = nueva_descripcion
+    catalogo.ultima_actualizacion = mexico_now()
+
+    productos = session.exec(
+        select(Producto).where(Producto.sku == catalogo.sku)
+    ).all()
+
+    for item in productos:
+        item.nombre = catalogo.nombre
+        item.descripcion = catalogo.descripcion
+        item.ultima_actualizacion = mexico_now()
+        session.add(item)
+
+    lotes = session.exec(
+        select(ProductoLote).where(ProductoLote.sku == catalogo.sku)
+    ).all()
+
+    for lote in lotes:
+        lote.nombre = catalogo.nombre
+        session.add(lote)
+
+    session.add(catalogo)
+    session.commit()
+    session.refresh(catalogo)
+
+    return catalogo
+
+
+@app.delete("/catalogo/productos/{sku}")
+def eliminar_catalogo(sku: str, session: SessionDep):
+    catalogo = session.exec(
+        select(ProductoCatalogo).where(ProductoCatalogo.sku == sku)
+    ).first()
+
+    if not catalogo:
+        raise HTTPException(status_code=404, detail="Producto de catálogo no encontrado")
+
+    producto_activo = session.exec(
+        select(Producto).where(Producto.sku == sku)
+    ).first()
+
+    if producto_activo:
+        raise HTTPException(
+            status_code=400,
+            detail="No puedes eliminar del catálogo un producto que existe actualmente en inventario.",
+        )
+
+    session.delete(catalogo)
+    session.commit()
+
+    return {"mensaje": f"Catálogo {sku} eliminado correctamente"}
 
 
 # ==========================================================
@@ -1076,10 +1245,7 @@ def analizar_inventario_con_ia(data: IARequest, session: SessionDep):
     except HTTPException as e:
         detalle = str(e.detail)
 
-        if (
-            "Insufficient Balance" in detalle
-            or "insufficient balance" in detalle.lower()
-        ):
+        if "Insufficient Balance" in detalle or "insufficient balance" in detalle.lower():
             fuente = "motor_interno_fallback"
             advertencia = (
                 "DeepSeek no tiene saldo suficiente. "
@@ -1119,11 +1285,10 @@ def crear_producto(producto: Producto, session: SessionDep):
         producto.nivel = normalizar_texto(producto.nivel)
         producto.slot = normalizar_texto(producto.slot)
 
-        producto.cantidad = (
-            producto.cantidad if producto.cantidad and producto.cantidad > 0 else 0
-        )
+        producto.cantidad = producto.cantidad if producto.cantidad and producto.cantidad > 0 else 0
         producto.costo_proveedor = producto.costo_proveedor or 0
         producto.precio_venta_sugerido = producto.precio_venta_sugerido or 0
+
         producto.stock_minimo = normalizar_stock_minimo(producto.stock_minimo)
         producto.stock_alto = normalizar_stock_alto(
             producto.stock_minimo,
@@ -1167,11 +1332,9 @@ def crear_producto(producto: Producto, session: SessionDep):
         )
 
         # ======================================================
-        # RESTOCK:
-        # Si ya existe en inventario, conserva identidad y ubicación.
-        # Solo suma cantidad, recalcula costo promedio, actualiza precio/stock
-        # y crea lote nuevo con su propia caducidad.
+        # RESTOCK
         # ======================================================
+
         if producto_existente:
             cantidad_anterior = producto_existente.cantidad or 0
             cantidad_nueva = producto.cantidad or 0
@@ -1219,8 +1382,9 @@ def crear_producto(producto: Producto, session: SessionDep):
             return producto_existente
 
         # ======================================================
-        # PRODUCTO NUEVO O PRODUCTO HISTÓRICO QUE YA NO ESTÁ EN INVENTARIO
+        # PRODUCTO NUEVO
         # ======================================================
+
         if not producto.rack or not producto.nivel or not producto.slot:
             raise HTTPException(
                 status_code=400,
@@ -1306,6 +1470,7 @@ def update_producto(sku: str, updated: Producto, session: SessionDep):
         db_producto.cantidad = updated.cantidad
         db_producto.costo_proveedor = updated.costo_proveedor or 0
         db_producto.precio_venta_sugerido = updated.precio_venta_sugerido or 0
+
         db_producto.stock_minimo = normalizar_stock_minimo(updated.stock_minimo)
         db_producto.stock_alto = normalizar_stock_alto(
             db_producto.stock_minimo,
@@ -1449,6 +1614,19 @@ def listar_movimientos(session: SessionDep):
     return session.exec(select(Movimiento)).all()
 
 
+@app.delete("/movimientos/{id_mov}")
+def eliminar_movimiento(id_mov: int, session: SessionDep):
+    mov = session.get(Movimiento, id_mov)
+
+    if not mov:
+        raise HTTPException(status_code=404, detail="Movimiento no encontrado")
+
+    session.delete(mov)
+    session.commit()
+
+    return {"mensaje": "Movimiento eliminado"}
+
+
 # ==========================================================
 # FINANZAS
 # ==========================================================
@@ -1457,24 +1635,23 @@ def listar_movimientos(session: SessionDep):
 def resumen_financiero(session: SessionDep):
     movimientos = session.exec(select(Movimiento)).all()
 
-    ingresos = sum(
-        m.ingreso_total or 0 for m in movimientos if m.accion == "Egreso"
-    )
+    ventas = [m for m in movimientos if m.accion == "Egreso"]
 
-    costos = sum(
-        m.costo_total or 0 for m in movimientos if m.accion == "Ingreso"
-    )
+    ingresos = sum(m.ingreso_total or 0 for m in ventas)
+    costos = sum(m.costo_total or 0 for m in ventas)
+    ganancia = ingresos - costos
 
     return {
         "ingresos": ingresos,
         "costos": costos,
-        "ganancia": ingresos - costos,
+        "ganancia": ganancia,
     }
 
 
 @app.get("/finanzas/grafica")
 def grafica_financiera(session: SessionDep):
     movimientos = session.exec(select(Movimiento)).all()
+
     datos = {}
 
     for m in movimientos:
@@ -1488,11 +1665,9 @@ def grafica_financiera(session: SessionDep):
                 "ganancia": 0,
             }
 
-        if m.accion == "Ingreso":
-            datos[fecha_key]["costos"] += m.costo_total or 0
-
-        elif m.accion == "Egreso":
+        if m.accion == "Egreso":
             datos[fecha_key]["ingresos"] += m.ingreso_total or 0
+            datos[fecha_key]["costos"] += m.costo_total or 0
 
         datos[fecha_key]["ganancia"] = (
             datos[fecha_key]["ingresos"] - datos[fecha_key]["costos"]
@@ -1522,17 +1697,16 @@ def login(data: LoginRequest):
     raise HTTPException(status_code=401, detail="Credenciales incorrectas")
 
 
-@app.delete("/movimientos/{id_mov}")
-def eliminar_movimiento(id_mov: int, session: SessionDep):
-    mov = session.get(Movimiento, id_mov)
+@app.post("/auth/create_user")
+def create_user(data: CreateUserRequest):
+    if not data.usuario or not data.contrasena:
+        raise HTTPException(status_code=400, detail="Usuario y contraseña son obligatorios")
 
-    if not mov:
-        raise HTTPException(status_code=404, detail="Movimiento no encontrado")
-
-    session.delete(mov)
-    session.commit()
-
-    return {"mensaje": "Movimiento eliminado"}
+    return {
+        "mensaje": "Usuario creado correctamente en modo demo",
+        "usuario": data.usuario,
+        "rol": data.rol,
+    }
 
 
 @app.delete("/admin/clear-all")
@@ -1544,20 +1718,35 @@ def limpiar_toda_la_base(confirm: str, session: SessionDep):
         )
 
     try:
-        session.exec(text("DELETE FROM movimiento"))
-        session.exec(text("DELETE FROM producto_lote"))
-        session.exec(text("DELETE FROM producto"))
-        session.exec(text("DELETE FROM producto_catalogo"))
+        if es_postgres():
+            session.exec(
+                text(
+                    """
+                    TRUNCATE TABLE
+                        movimiento,
+                        producto_lote,
+                        producto,
+                        producto_catalogo
+                    RESTART IDENTITY CASCADE;
+                    """
+                )
+            )
+        else:
+            session.exec(text("DELETE FROM movimiento"))
+            session.exec(text("DELETE FROM producto_lote"))
+            session.exec(text("DELETE FROM producto"))
+            session.exec(text("DELETE FROM producto_catalogo"))
 
-        session.exec(text("ALTER TABLE movimiento AUTO_INCREMENT = 1"))
-        session.exec(text("ALTER TABLE producto_lote AUTO_INCREMENT = 1"))
-        session.exec(text("ALTER TABLE producto AUTO_INCREMENT = 1"))
-        session.exec(text("ALTER TABLE producto_catalogo AUTO_INCREMENT = 1"))
+            session.exec(text("ALTER TABLE movimiento AUTO_INCREMENT = 1"))
+            session.exec(text("ALTER TABLE producto_lote AUTO_INCREMENT = 1"))
+            session.exec(text("ALTER TABLE producto AUTO_INCREMENT = 1"))
+            session.exec(text("ALTER TABLE producto_catalogo AUTO_INCREMENT = 1"))
 
         session.commit()
 
         return {
             "mensaje": "Base de datos limpiada correctamente",
+            "database": engine.dialect.name,
             "tablas_limpiadas": [
                 "movimiento",
                 "producto_lote",
@@ -1571,6 +1760,10 @@ def limpiar_toda_la_base(confirm: str, session: SessionDep):
         print(f"❌ Error limpiando base de datos: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# ==========================================================
+# LOCAL DEV
+# ==========================================================
 
 if __name__ == "__main__":
     import uvicorn
