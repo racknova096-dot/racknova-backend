@@ -8,3 +8,5 @@ python-dotenv
 psycopg2-binary
 alembic
 cryptography
+passlib[bcrypt]
+python-jose[cryptography]
