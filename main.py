@@ -7,10 +7,12 @@ from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, Depends, Query
 from typing import Annotated, Optional, List, Dict, Any
 from sqlmodel import SQLModel, Field, Session, select
-from datetime import datetime, date
 from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
+from passlib.context import CryptContext
+from jose import jwt
+from datetime import datetime, date, timedelta
 
 import sys
 import os
@@ -29,6 +31,28 @@ except Exception as e:
 
 MEXICO_TZ = ZoneInfo("America/Mexico_City")
 
+SECRET_KEY = os.getenv("SECRET_KEY", "racknova-dev-secret-cambiar-en-render")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 12
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    return pwd_context.verify(password, password_hash)
+
+
+def create_access_token(data: dict):
+    to_encode = data.copy()
+
+    expire = mexico_now() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 def mexico_now():
     return datetime.now(MEXICO_TZ).replace(tzinfo=None)
@@ -158,6 +182,22 @@ class Movimiento(SQLModel, table=True):
     costo_total: float = 0
     ganancia: float = 0
 
+class Usuario(SQLModel, table=True):
+    __tablename__ = "usuario"
+
+    id_usuario: Optional[int] = Field(default=None, primary_key=True)
+
+    usuario: str = Field(index=True)
+    nombre: Optional[str] = None
+    rol: str = "operator"
+
+    password_hash: str
+
+    activo: bool = True
+
+    fecha_creacion: datetime = Field(default_factory=mexico_now)
+    ultima_actualizacion: datetime = Field(default_factory=mexico_now)
+    ultimo_acceso: Optional[datetime] = None
 
 class LoginRequest(BaseModel):
     username: str
@@ -168,7 +208,15 @@ class CreateUserRequest(BaseModel):
     usuario: str
     contrasena: str
     rol: str = "operator"
+    nombre: Optional[str] = None
 
+
+class UpdateUserRequest(BaseModel):
+    usuario: Optional[str] = None
+    contrasena: Optional[str] = None
+    rol: Optional[str] = None
+    nombre: Optional[str] = None
+    activo: Optional[bool] = None
 
 class SalidaProducto(SQLModel):
     cantidad_vendida: int
@@ -414,7 +462,27 @@ def ejecutar_migraciones_ligeras():
             "INT DEFAULT 0",
         )
 
+def crear_admin_inicial():
+    with Session(engine) as session:
+        usuarios = session.exec(select(Usuario)).all()
 
+        if usuarios:
+            return
+
+        admin = Usuario(
+            usuario="admin@racknova.com",
+            nombre="Administrador RackNova",
+            rol="admin",
+            password_hash=hash_password("admin123"),
+            activo=True,
+            fecha_creacion=mexico_now(),
+            ultima_actualizacion=mexico_now(),
+        )
+
+        session.add(admin)
+        session.commit()
+
+        print("✅ Usuario administrador inicial creado: admin@racknova.com")
 # ==========================================================
 # STARTUP
 # ==========================================================
@@ -427,6 +495,7 @@ def on_startup():
 
         SQLModel.metadata.create_all(engine)
         ejecutar_migraciones_ligeras()
+        crear_admin_inicial()
 
         print("✅ Database tables created/updated successfully")
 
@@ -1681,20 +1750,204 @@ def grafica_financiera(session: SessionDep):
 # ==========================================================
 
 @app.post("/auth/login")
-def login(data: LoginRequest):
-    if data.username == "admin@racknova.com" and data.password == "admin123":
-        return {
-            "access_token": "racknova-demo-token",
-            "token_type": "bearer",
-            "user": {
-                "email": data.username,
-                "username": data.username,
-                "name": "Administrador RackNova",
-                "role": "admin",
-            },
-        }
+def login(data: LoginRequest, session: SessionDep):
+    usuario = session.exec(
+        select(Usuario).where(Usuario.usuario == data.username)
+    ).first()
 
-    raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+    if not usuario:
+        raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+
+    if not usuario.activo:
+        raise HTTPException(status_code=403, detail="Usuario inactivo")
+
+    if not verify_password(data.password, usuario.password_hash):
+        raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+
+    usuario.ultimo_acceso = mexico_now()
+    usuario.ultima_actualizacion = mexico_now()
+
+    session.add(usuario)
+    session.commit()
+    session.refresh(usuario)
+
+    token = create_access_token(
+        {
+            "sub": usuario.usuario,
+            "id_usuario": usuario.id_usuario,
+            "rol": usuario.rol,
+        }
+    )
+
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id_usuario": usuario.id_usuario,
+            "email": usuario.usuario,
+            "username": usuario.usuario,
+            "name": usuario.nombre or usuario.usuario,
+            "role": usuario.rol,
+            "activo": usuario.activo,
+        },
+    }
+
+
+@app.get("/auth/users")
+def listar_usuarios(session: SessionDep):
+    usuarios = session.exec(select(Usuario)).all()
+
+    return [
+        {
+            "id_usuario": usuario.id_usuario,
+            "usuario": usuario.usuario,
+            "nombre": usuario.nombre,
+            "rol": usuario.rol,
+            "activo": usuario.activo,
+            "fecha_creacion": usuario.fecha_creacion,
+            "ultima_actualizacion": usuario.ultima_actualizacion,
+            "ultimo_acceso": usuario.ultimo_acceso,
+        }
+        for usuario in usuarios
+    ]
+
+
+@app.post("/auth/create_user")
+def create_user(data: CreateUserRequest, session: SessionDep):
+    usuario_limpio = normalizar_texto(data.usuario)
+    contrasena_limpia = normalizar_texto(data.contrasena)
+    rol_limpio = normalizar_texto(data.rol) or "operator"
+    nombre_limpio = normalizar_texto(data.nombre) or None
+
+    if not usuario_limpio or not contrasena_limpia:
+        raise HTTPException(
+            status_code=400,
+            detail="Usuario y contraseña son obligatorios",
+        )
+
+    if rol_limpio not in ["admin", "operator", "viewer"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Rol inválido. Usa admin, operator o viewer.",
+        )
+
+    existente = session.exec(
+        select(Usuario).where(Usuario.usuario == usuario_limpio)
+    ).first()
+
+    if existente:
+        raise HTTPException(
+            status_code=400,
+            detail="Ese usuario ya existe.",
+        )
+
+    nuevo_usuario = Usuario(
+        usuario=usuario_limpio,
+        nombre=nombre_limpio,
+        rol=rol_limpio,
+        password_hash=hash_password(contrasena_limpia),
+        activo=True,
+        fecha_creacion=mexico_now(),
+        ultima_actualizacion=mexico_now(),
+    )
+
+    session.add(nuevo_usuario)
+    session.commit()
+    session.refresh(nuevo_usuario)
+
+    return {
+        "mensaje": "Usuario creado correctamente",
+        "usuario": {
+            "id_usuario": nuevo_usuario.id_usuario,
+            "usuario": nuevo_usuario.usuario,
+            "nombre": nuevo_usuario.nombre,
+            "rol": nuevo_usuario.rol,
+            "activo": nuevo_usuario.activo,
+        },
+    }
+
+
+@app.put("/auth/users/{id_usuario}")
+def actualizar_usuario(
+    id_usuario: int,
+    data: UpdateUserRequest,
+    session: SessionDep,
+):
+    usuario = session.get(Usuario, id_usuario)
+
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if data.usuario is not None:
+        usuario_limpio = normalizar_texto(data.usuario)
+
+        if not usuario_limpio:
+            raise HTTPException(status_code=400, detail="El usuario no puede quedar vacío")
+
+        existente = session.exec(
+            select(Usuario).where(Usuario.usuario == usuario_limpio)
+        ).first()
+
+        if existente and existente.id_usuario != id_usuario:
+            raise HTTPException(status_code=400, detail="Ese usuario ya existe")
+
+        usuario.usuario = usuario_limpio
+
+    if data.nombre is not None:
+        usuario.nombre = normalizar_texto(data.nombre) or None
+
+    if data.rol is not None:
+        rol_limpio = normalizar_texto(data.rol)
+
+        if rol_limpio not in ["admin", "operator", "viewer"]:
+            raise HTTPException(
+                status_code=400,
+                detail="Rol inválido. Usa admin, operator o viewer.",
+            )
+
+        usuario.rol = rol_limpio
+
+    if data.contrasena is not None and normalizar_texto(data.contrasena):
+        usuario.password_hash = hash_password(normalizar_texto(data.contrasena))
+
+    if data.activo is not None:
+        usuario.activo = data.activo
+
+    usuario.ultima_actualizacion = mexico_now()
+
+    session.add(usuario)
+    session.commit()
+    session.refresh(usuario)
+
+    return {
+        "mensaje": "Usuario actualizado correctamente",
+        "usuario": {
+            "id_usuario": usuario.id_usuario,
+            "usuario": usuario.usuario,
+            "nombre": usuario.nombre,
+            "rol": usuario.rol,
+            "activo": usuario.activo,
+        },
+    }
+
+
+@app.delete("/auth/users/{id_usuario}")
+def desactivar_usuario(id_usuario: int, session: SessionDep):
+    usuario = session.get(Usuario, id_usuario)
+
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    usuario.activo = False
+    usuario.ultima_actualizacion = mexico_now()
+
+    session.add(usuario)
+    session.commit()
+
+    return {
+        "mensaje": "Usuario desactivado correctamente",
+        "id_usuario": id_usuario,
+    }
 
 
 @app.post("/auth/create_user")
