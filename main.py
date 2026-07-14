@@ -1950,16 +1950,6 @@ def desactivar_usuario(id_usuario: int, session: SessionDep):
     }
 
 
-@app.post("/auth/create_user")
-def create_user(data: CreateUserRequest):
-    if not data.usuario or not data.contrasena:
-        raise HTTPException(status_code=400, detail="Usuario y contraseña son obligatorios")
-
-    return {
-        "mensaje": "Usuario creado correctamente en modo demo",
-        "usuario": data.usuario,
-        "rol": data.rol,
-    }
 
 
 @app.delete("/admin/clear-all")
