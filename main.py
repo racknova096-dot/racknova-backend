@@ -1,19 +1,20 @@
 # ==========================================================
 # RACKNOVA API — INVENTARIO + CATÁLOGO + LOTES FEFO + IA
 # Compatible con MySQL/Railway y PostgreSQL/Supabase
+# Seguridad JWT + Roles: admin / operator / viewer
 # ==========================================================
 
 from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi import FastAPI, HTTPException, Depends, Query, status
+from fastapi.security import OAuth2PasswordBearer
 from typing import Annotated, Optional, List, Dict, Any
 from sqlmodel import SQLModel, Field, Session, select
 from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 from passlib.context import CryptContext
-from jose import jwt
+from jose import jwt, JWTError
 from datetime import datetime, date, timedelta
-
 import sys
 import os
 import json
@@ -22,12 +23,15 @@ import urllib.error
 
 try:
     from database import engine, get_session
-
     print("✅ Database module imported successfully")
 except Exception as e:
     print(f"❌ ERROR importing database: {e}")
     sys.exit(1)
 
+
+# ==========================================================
+# CONFIGURACIÓN GENERAL
+# ==========================================================
 
 MEXICO_TZ = ZoneInfo("America/Mexico_City")
 
@@ -35,7 +39,13 @@ SECRET_KEY = os.getenv("SECRET_KEY", "racknova-dev-secret-cambiar-en-render")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 12
 
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def mexico_now():
+    return datetime.now(MEXICO_TZ).replace(tzinfo=None)
 
 
 def hash_password(password: str) -> str:
@@ -48,14 +58,9 @@ def verify_password(password: str, password_hash: str) -> bool:
 
 def create_access_token(data: dict):
     to_encode = data.copy()
-
     expire = mexico_now() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
-
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
-def mexico_now():
-    return datetime.now(MEXICO_TZ).replace(tzinfo=None)
 
 
 def normalizar_texto(value: Optional[str]) -> str:
@@ -65,7 +70,6 @@ def normalizar_texto(value: Optional[str]) -> str:
 def normalizar_stock_minimo(stock_minimo: Optional[int]) -> int:
     if stock_minimo is not None and stock_minimo > 0:
         return stock_minimo
-
     return 10
 
 
@@ -82,7 +86,7 @@ def normalizar_stock_alto(
 
 
 # ==========================================================
-# CONFIGURACIÓN BASE
+# APP
 # ==========================================================
 
 app = FastAPI(title="RackNova API")
@@ -112,7 +116,6 @@ class Producto(SQLModel, table=True):
     sku: str
     nombre: str
     descripcion: Optional[str] = None
-
     cantidad: int = 0
 
     rack: str
@@ -182,6 +185,7 @@ class Movimiento(SQLModel, table=True):
     costo_total: float = 0
     ganancia: float = 0
 
+
 class Usuario(SQLModel, table=True):
     __tablename__ = "usuario"
 
@@ -192,12 +196,12 @@ class Usuario(SQLModel, table=True):
     rol: str = "operator"
 
     password_hash: str
-
     activo: bool = True
 
     fecha_creacion: datetime = Field(default_factory=mexico_now)
     ultima_actualizacion: datetime = Field(default_factory=mexico_now)
     ultimo_acceso: Optional[datetime] = None
+
 
 class LoginRequest(BaseModel):
     username: str
@@ -218,10 +222,10 @@ class UpdateUserRequest(BaseModel):
     nombre: Optional[str] = None
     activo: Optional[bool] = None
 
+
 class SalidaProducto(SQLModel):
     cantidad_vendida: int
     precio_venta: float
-
     costo_proveedor: float = 0
     ingreso_total: float = 0
     costo_total: float = 0
@@ -230,6 +234,75 @@ class SalidaProducto(SQLModel):
 
 class IARequest(BaseModel):
     pregunta: str
+
+
+# ==========================================================
+# SEGURIDAD / ROLES
+# ==========================================================
+
+def get_current_user(
+    token: Annotated[str, Depends(oauth2_scheme)],
+    session: SessionDep,
+) -> Usuario:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Token inválido o sesión expirada.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload.get("sub")
+
+        if not username:
+            raise credentials_exception
+
+    except JWTError:
+        raise credentials_exception
+
+    usuario = session.exec(
+        select(Usuario).where(Usuario.usuario == username)
+    ).first()
+
+    if not usuario:
+        raise credentials_exception
+
+    if not usuario.activo:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Usuario inactivo.",
+        )
+
+    return usuario
+
+
+CurrentUserDep = Annotated[Usuario, Depends(get_current_user)]
+
+
+def require_roles(*allowed_roles: str):
+    def role_checker(current_user: CurrentUserDep) -> Usuario:
+        if current_user.rol not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tienes permisos para realizar esta acción.",
+            )
+
+        return current_user
+
+    return role_checker
+
+
+AdminUserDep = Annotated[Usuario, Depends(require_roles("admin"))]
+
+OperatorUserDep = Annotated[
+    Usuario,
+    Depends(require_roles("admin", "operator")),
+]
+
+ReadUserDep = Annotated[
+    Usuario,
+    Depends(require_roles("admin", "operator", "viewer")),
+]
 
 
 # ==========================================================
@@ -253,7 +326,7 @@ def obtener_columnas(session: Session, tabla: str) -> List[str]:
                     SELECT column_name
                     FROM information_schema.columns
                     WHERE table_schema = 'public'
-                    AND table_name = :tabla
+                      AND table_name = :tabla
                     ORDER BY ordinal_position;
                     """
                 ).bindparams(tabla=tabla)
@@ -308,11 +381,9 @@ def modificar_columna_si_existe(
         print(f"Ajustando columna heredada {tabla}.{columna}...")
 
         if es_postgres():
-            # En Supabase/PostgreSQL normalmente no necesitaremos ajustar
-            # columnas heredadas porque la base arranca limpia.
-            # Evitamos usar MODIFY COLUMN porque es sintaxis exclusiva de MySQL.
             print(
-                f"ℹ️ PostgreSQL detectado. Se omite MODIFY COLUMN en {tabla}.{columna}."
+                f"ℹ️ PostgreSQL detectado. "
+                f"Se omite MODIFY COLUMN en {tabla}.{columna}."
             )
             return
 
@@ -462,6 +533,7 @@ def ejecutar_migraciones_ligeras():
             "INT DEFAULT 0",
         )
 
+
 def crear_admin_inicial():
     with Session(engine) as session:
         usuarios = session.exec(select(Usuario)).all()
@@ -483,6 +555,8 @@ def crear_admin_inicial():
         session.commit()
 
         print("✅ Usuario administrador inicial creado: admin@racknova.com")
+
+
 # ==========================================================
 # STARTUP
 # ==========================================================
@@ -494,6 +568,7 @@ def on_startup():
         print(f"Motor SQL detectado: {engine.dialect.name}")
 
         SQLModel.metadata.create_all(engine)
+
         ejecutar_migraciones_ligeras()
         crear_admin_inicial()
 
@@ -618,8 +693,7 @@ def calcular_costo_promedio_producto(
         return 0
 
     return round(
-        ((cantidad_actual * costo_actual) + (cantidad_nueva * costo_nuevo))
-        / total,
+        ((cantidad_actual * costo_actual) + (cantidad_nueva * costo_nuevo)) / total,
         2,
     )
 
@@ -785,12 +859,14 @@ def construir_resumen_inventario(
         ganancia_total = venta.get("ganancia_total", 0)
 
         margen = 0
+
         if ingreso_total > 0:
             margen = (ganancia_total / ingreso_total) * 100
 
         cantidad_ingresada_estimada = producto.cantidad + cantidad_vendida
 
         porcentaje_vendido = 0
+
         if cantidad_ingresada_estimada > 0:
             porcentaje_vendido = (
                 cantidad_vendida / cantidad_ingresada_estimada
@@ -806,9 +882,7 @@ def construir_resumen_inventario(
                     {
                         "id_lote": lote.id_lote,
                         "cantidad_actual": lote.cantidad_actual,
-                        "caducidad": str(lote.caducidad)
-                        if lote.caducidad
-                        else None,
+                        "caducidad": str(lote.caducidad) if lote.caducidad else None,
                         "dias_para_caducar": calcular_dias_caducidad(
                             lote.caducidad
                         ),
@@ -876,28 +950,24 @@ def generar_respuesta_fallback(pregunta: str, resumen: Dict[str, Any]) -> str:
     productos = resumen.get("productos", [])
 
     vencidos = [
-        p
-        for p in productos
+        p for p in productos
         if p.get("dias_para_caducar") is not None
         and p.get("dias_para_caducar") < 0
     ]
 
     proximos_caducar = [
-        p
-        for p in productos
+        p for p in productos
         if p.get("dias_para_caducar") is not None
         and 0 <= p.get("dias_para_caducar") <= 30
     ]
 
     stock_bajo = [
-        p
-        for p in productos
+        p for p in productos
         if p.get("stock_actual", 0) <= p.get("stock_minimo", 10)
     ]
 
     baja_rotacion = [
-        p
-        for p in productos
+        p for p in productos
         if p.get("stock_actual", 0) > 0
         and (
             p.get("cantidad_vendida", 0) == 0
@@ -906,8 +976,7 @@ def generar_respuesta_fallback(pregunta: str, resumen: Dict[str, Any]) -> str:
     ]
 
     rentables = [
-        p
-        for p in productos
+        p for p in productos
         if p.get("margen_porcentaje", 0) >= 30
         and p.get("ganancia_total", 0) > 0
     ]
@@ -1017,7 +1086,9 @@ Eres RACKNOVA IA, un asistente experto en inventarios, caducidad, rotación, des
 Responde siempre en español.
 Usa únicamente los datos enviados.
 No inventes productos, precios, ventas ni cantidades.
+
 Para vencidos recomienda retirar o registrar merma, no descuento.
+
 Para próximos a caducar puedes sugerir:
 1 a 5 días = 40%
 6 a 10 días = 30%
@@ -1147,13 +1218,14 @@ def check_db(session: SessionDep):
 # ==========================================================
 
 @app.get("/catalogo/productos", response_model=List[ProductoCatalogo])
-def listar_catalogo(session: SessionDep):
+def listar_catalogo(session: SessionDep, current_user: OperatorUserDep):
     return session.exec(select(ProductoCatalogo)).all()
 
 
 @app.get("/catalogo/productos/buscar", response_model=List[ProductoCatalogo])
 def buscar_catalogo(
     session: SessionDep,
+    current_user: OperatorUserDep,
     query: str = Query(..., min_length=1),
 ):
     q = f"%{query.strip()}%"
@@ -1167,7 +1239,11 @@ def buscar_catalogo(
 
 
 @app.post("/catalogo/productos", response_model=ProductoCatalogo)
-def crear_catalogo(producto: ProductoCatalogo, session: SessionDep):
+def crear_catalogo(
+    producto: ProductoCatalogo,
+    session: SessionDep,
+    current_user: OperatorUserDep,
+):
     catalogo = crear_catalogo_si_no_existe(
         session=session,
         sku=producto.sku,
@@ -1186,6 +1262,7 @@ def actualizar_catalogo(
     sku: str,
     producto: ProductoCatalogo,
     session: SessionDep,
+    current_user: OperatorUserDep,
 ):
     catalogo = session.exec(
         select(ProductoCatalogo).where(ProductoCatalogo.sku == sku)
@@ -1230,7 +1307,11 @@ def actualizar_catalogo(
 
 
 @app.delete("/catalogo/productos/{sku}")
-def eliminar_catalogo(sku: str, session: SessionDep):
+def eliminar_catalogo(
+    sku: str,
+    session: SessionDep,
+    current_user: OperatorUserDep,
+):
     catalogo = session.exec(
         select(ProductoCatalogo).where(ProductoCatalogo.sku == sku)
     ).first()
@@ -1259,12 +1340,16 @@ def eliminar_catalogo(sku: str, session: SessionDep):
 # ==========================================================
 
 @app.get("/productos/{sku}/lotes", response_model=List[ProductoLote])
-def listar_lotes_producto(sku: str, session: SessionDep):
+def listar_lotes_producto(
+    sku: str,
+    session: SessionDep,
+    current_user: OperatorUserDep,
+):
     return obtener_lotes_activos(session, sku)
 
 
 @app.get("/lotes", response_model=List[ProductoLote])
-def listar_lotes(session: SessionDep):
+def listar_lotes(session: SessionDep, current_user: ReadUserDep):
     lotes = session.exec(select(ProductoLote)).all()
 
     return sorted(
@@ -1283,7 +1368,11 @@ def listar_lotes(session: SessionDep):
 # ==========================================================
 
 @app.post("/ia/inventario")
-def analizar_inventario_con_ia(data: IARequest, session: SessionDep):
+def analizar_inventario_con_ia(
+    data: IARequest,
+    session: SessionDep,
+    current_user: OperatorUserDep,
+):
     pregunta_limpia = data.pregunta.strip()
 
     if not pregunta_limpia:
@@ -1344,7 +1433,11 @@ def analizar_inventario_con_ia(data: IARequest, session: SessionDep):
 # ==========================================================
 
 @app.post("/productos", response_model=Producto)
-def crear_producto(producto: Producto, session: SessionDep):
+def crear_producto(
+    producto: Producto,
+    session: SessionDep,
+    current_user: OperatorUserDep,
+):
     try:
         producto.sku = normalizar_texto(producto.sku)
         producto.nombre = normalizar_texto(producto.nombre)
@@ -1403,7 +1496,6 @@ def crear_producto(producto: Producto, session: SessionDep):
         # ======================================================
         # RESTOCK
         # ======================================================
-
         if producto_existente:
             cantidad_anterior = producto_existente.cantidad or 0
             cantidad_nueva = producto.cantidad or 0
@@ -1418,13 +1510,13 @@ def crear_producto(producto: Producto, session: SessionDep):
             producto_existente.cantidad = cantidad_anterior + cantidad_nueva
             producto_existente.costo_proveedor = nuevo_costo_promedio
             producto_existente.precio_venta_sugerido = producto.precio_venta_sugerido
+
             producto_existente.stock_minimo = producto.stock_minimo
             producto_existente.stock_alto = producto.stock_alto
 
             producto_existente.sku = catalogo.sku
             producto_existente.nombre = catalogo.nombre
             producto_existente.descripcion = catalogo.descripcion
-
             producto_existente.ultima_actualizacion = mexico_now()
 
             crear_lote(
@@ -1453,7 +1545,6 @@ def crear_producto(producto: Producto, session: SessionDep):
         # ======================================================
         # PRODUCTO NUEVO
         # ======================================================
-
         if not producto.rack or not producto.nivel or not producto.slot:
             raise HTTPException(
                 status_code=400,
@@ -1479,7 +1570,6 @@ def crear_producto(producto: Producto, session: SessionDep):
         producto.sku = catalogo.sku
         producto.nombre = catalogo.nombre
         producto.descripcion = catalogo.descripcion
-
         producto.fecha_registro = mexico_now()
         producto.ultima_actualizacion = mexico_now()
 
@@ -1511,12 +1601,17 @@ def crear_producto(producto: Producto, session: SessionDep):
 
 
 @app.get("/productos", response_model=List[Producto])
-def listar_productos(session: SessionDep):
+def listar_productos(session: SessionDep, current_user: ReadUserDep):
     return session.exec(select(Producto)).all()
 
 
 @app.put("/productos/{sku}", response_model=Producto)
-def update_producto(sku: str, updated: Producto, session: SessionDep):
+def update_producto(
+    sku: str,
+    updated: Producto,
+    session: SessionDep,
+    current_user: OperatorUserDep,
+):
     try:
         db_producto = session.exec(
             select(Producto).where(Producto.sku == sku)
@@ -1573,7 +1668,11 @@ def update_producto(sku: str, updated: Producto, session: SessionDep):
 
 
 @app.delete("/productos/sku/{sku}")
-def eliminar_producto_por_sku(sku: str, session: SessionDep):
+def eliminar_producto_por_sku(
+    sku: str,
+    session: SessionDep,
+    current_user: OperatorUserDep,
+):
     try:
         db_producto = session.exec(
             select(Producto).where(Producto.sku == sku)
@@ -1599,7 +1698,12 @@ def eliminar_producto_por_sku(sku: str, session: SessionDep):
 
 
 @app.post("/productos/sku/{sku}/salida")
-def registrar_salida_producto(sku: str, salida: SalidaProducto, session: SessionDep):
+def registrar_salida_producto(
+    sku: str,
+    salida: SalidaProducto,
+    session: SessionDep,
+    current_user: OperatorUserDep,
+):
     try:
         db_producto = session.exec(
             select(Producto).where(Producto.sku == sku)
@@ -1668,8 +1772,13 @@ def registrar_salida_producto(sku: str, salida: SalidaProducto, session: Session
 # ==========================================================
 
 @app.post("/movimientos", response_model=Movimiento)
-def crear_movimiento(mov: Movimiento, session: SessionDep):
+def crear_movimiento(
+    mov: Movimiento,
+    session: SessionDep,
+    current_user: OperatorUserDep,
+):
     mov.fecha = mexico_now()
+    mov.usuario = current_user.nombre or current_user.usuario
 
     session.add(mov)
     session.commit()
@@ -1679,12 +1788,16 @@ def crear_movimiento(mov: Movimiento, session: SessionDep):
 
 
 @app.get("/movimientos", response_model=List[Movimiento])
-def listar_movimientos(session: SessionDep):
+def listar_movimientos(session: SessionDep, current_user: ReadUserDep):
     return session.exec(select(Movimiento)).all()
 
 
 @app.delete("/movimientos/{id_mov}")
-def eliminar_movimiento(id_mov: int, session: SessionDep):
+def eliminar_movimiento(
+    id_mov: int,
+    session: SessionDep,
+    current_user: AdminUserDep,
+):
     mov = session.get(Movimiento, id_mov)
 
     if not mov:
@@ -1701,7 +1814,7 @@ def eliminar_movimiento(id_mov: int, session: SessionDep):
 # ==========================================================
 
 @app.get("/finanzas/resumen")
-def resumen_financiero(session: SessionDep):
+def resumen_financiero(session: SessionDep, current_user: AdminUserDep):
     movimientos = session.exec(select(Movimiento)).all()
 
     ventas = [m for m in movimientos if m.accion == "Egreso"]
@@ -1718,7 +1831,7 @@ def resumen_financiero(session: SessionDep):
 
 
 @app.get("/finanzas/grafica")
-def grafica_financiera(session: SessionDep):
+def grafica_financiera(session: SessionDep, current_user: AdminUserDep):
     movimientos = session.exec(select(Movimiento)).all()
 
     datos = {}
@@ -1737,16 +1850,15 @@ def grafica_financiera(session: SessionDep):
         if m.accion == "Egreso":
             datos[fecha_key]["ingresos"] += m.ingreso_total or 0
             datos[fecha_key]["costos"] += m.costo_total or 0
-
-        datos[fecha_key]["ganancia"] = (
-            datos[fecha_key]["ingresos"] - datos[fecha_key]["costos"]
-        )
+            datos[fecha_key]["ganancia"] = (
+                datos[fecha_key]["ingresos"] - datos[fecha_key]["costos"]
+            )
 
     return list(datos.values())
 
 
 # ==========================================================
-# LOGIN / ADMIN
+# LOGIN / USUARIOS
 # ==========================================================
 
 @app.post("/auth/login")
@@ -1794,7 +1906,7 @@ def login(data: LoginRequest, session: SessionDep):
 
 
 @app.get("/auth/users")
-def listar_usuarios(session: SessionDep):
+def listar_usuarios(session: SessionDep, current_user: AdminUserDep):
     usuarios = session.exec(select(Usuario)).all()
 
     return [
@@ -1813,7 +1925,11 @@ def listar_usuarios(session: SessionDep):
 
 
 @app.post("/auth/create_user")
-def create_user(data: CreateUserRequest, session: SessionDep):
+def create_user(
+    data: CreateUserRequest,
+    session: SessionDep,
+    current_user: AdminUserDep,
+):
     usuario_limpio = normalizar_texto(data.usuario)
     contrasena_limpia = normalizar_texto(data.contrasena)
     rol_limpio = normalizar_texto(data.rol) or "operator"
@@ -1838,7 +1954,7 @@ def create_user(data: CreateUserRequest, session: SessionDep):
     if existente:
         raise HTTPException(
             status_code=400,
-            detail="Ese usuario ya existe.",
+            detail="Ya existe un usuario con ese correo o nombre de acceso.",
         )
 
     nuevo_usuario = Usuario(
@@ -1863,8 +1979,22 @@ def create_user(data: CreateUserRequest, session: SessionDep):
             "nombre": nuevo_usuario.nombre,
             "rol": nuevo_usuario.rol,
             "activo": nuevo_usuario.activo,
+            "fecha_creacion": nuevo_usuario.fecha_creacion,
+            "ultima_actualizacion": nuevo_usuario.ultima_actualizacion,
+            "ultimo_acceso": nuevo_usuario.ultimo_acceso,
         },
     }
+
+
+def contar_admins_activos(session: Session) -> int:
+    admins = session.exec(
+        select(Usuario).where(
+            (Usuario.rol == "admin")
+            & (Usuario.activo == True)
+        )
+    ).all()
+
+    return len(admins)
 
 
 @app.put("/auth/users/{id_usuario}")
@@ -1872,45 +2002,61 @@ def actualizar_usuario(
     id_usuario: int,
     data: UpdateUserRequest,
     session: SessionDep,
+    current_user: AdminUserDep,
 ):
     usuario = session.get(Usuario, id_usuario)
 
     if not usuario:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    if data.usuario is not None:
-        usuario_limpio = normalizar_texto(data.usuario)
+    usuario_nuevo = normalizar_texto(data.usuario) if data.usuario is not None else None
+    nombre_nuevo = normalizar_texto(data.nombre) if data.nombre is not None else None
+    rol_nuevo = normalizar_texto(data.rol) if data.rol is not None else None
+    contrasena_nueva = normalizar_texto(data.contrasena) if data.contrasena is not None else None
 
-        if not usuario_limpio:
-            raise HTTPException(status_code=400, detail="El usuario no puede quedar vacío")
-
+    if usuario_nuevo:
         existente = session.exec(
-            select(Usuario).where(Usuario.usuario == usuario_limpio)
+            select(Usuario).where(Usuario.usuario == usuario_nuevo)
         ).first()
 
-        if existente and existente.id_usuario != id_usuario:
-            raise HTTPException(status_code=400, detail="Ese usuario ya existe")
+        if existente and existente.id_usuario != usuario.id_usuario:
+            raise HTTPException(
+                status_code=400,
+                detail="Ya existe otro usuario con ese correo o nombre de acceso.",
+            )
 
-        usuario.usuario = usuario_limpio
+        usuario.usuario = usuario_nuevo
 
     if data.nombre is not None:
-        usuario.nombre = normalizar_texto(data.nombre) or None
+        usuario.nombre = nombre_nuevo or None
 
-    if data.rol is not None:
-        rol_limpio = normalizar_texto(data.rol)
-
-        if rol_limpio not in ["admin", "operator", "viewer"]:
+    if rol_nuevo:
+        if rol_nuevo not in ["admin", "operator", "viewer"]:
             raise HTTPException(
                 status_code=400,
                 detail="Rol inválido. Usa admin, operator o viewer.",
             )
 
-        usuario.rol = rol_limpio
+        if usuario.rol == "admin" and rol_nuevo != "admin" and usuario.activo:
+            if contar_admins_activos(session) <= 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No puedes quitar el rol del último administrador activo.",
+                )
 
-    if data.contrasena is not None and normalizar_texto(data.contrasena):
-        usuario.password_hash = hash_password(normalizar_texto(data.contrasena))
+        usuario.rol = rol_nuevo
+
+    if contrasena_nueva:
+        usuario.password_hash = hash_password(contrasena_nueva)
 
     if data.activo is not None:
+        if usuario.rol == "admin" and usuario.activo and data.activo is False:
+            if contar_admins_activos(session) <= 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No puedes desactivar el último administrador activo.",
+                )
+
         usuario.activo = data.activo
 
     usuario.ultima_actualizacion = mexico_now()
@@ -1927,37 +2073,64 @@ def actualizar_usuario(
             "nombre": usuario.nombre,
             "rol": usuario.rol,
             "activo": usuario.activo,
+            "fecha_creacion": usuario.fecha_creacion,
+            "ultima_actualizacion": usuario.ultima_actualizacion,
+            "ultimo_acceso": usuario.ultimo_acceso,
         },
     }
 
 
 @app.delete("/auth/users/{id_usuario}")
-def desactivar_usuario(id_usuario: int, session: SessionDep):
+def desactivar_usuario(
+    id_usuario: int,
+    session: SessionDep,
+    current_user: AdminUserDep,
+):
     usuario = session.get(Usuario, id_usuario)
 
     if not usuario:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if usuario.rol == "admin" and usuario.activo:
+        if contar_admins_activos(session) <= 1:
+            raise HTTPException(
+                status_code=400,
+                detail="No puedes desactivar el último administrador activo.",
+            )
 
     usuario.activo = False
     usuario.ultima_actualizacion = mexico_now()
 
     session.add(usuario)
     session.commit()
+    session.refresh(usuario)
 
     return {
         "mensaje": "Usuario desactivado correctamente",
-        "id_usuario": id_usuario,
+        "usuario": {
+            "id_usuario": usuario.id_usuario,
+            "usuario": usuario.usuario,
+            "nombre": usuario.nombre,
+            "rol": usuario.rol,
+            "activo": usuario.activo,
+        },
     }
 
 
-
+# ==========================================================
+# ADMIN
+# ==========================================================
 
 @app.delete("/admin/clear-all")
-def limpiar_toda_la_base(confirm: str, session: SessionDep):
+def limpiar_toda_la_base(
+    confirm: str,
+    session: SessionDep,
+    current_user: AdminUserDep,
+):
     if confirm != "BORRAR_TODO_RACKNOVA":
         raise HTTPException(
             status_code=400,
-            detail="Confirmación inválida. Esta acción borra toda la base de datos.",
+            detail="Confirmación inválida.",
         )
 
     try:
@@ -1966,49 +2139,29 @@ def limpiar_toda_la_base(confirm: str, session: SessionDep):
                 text(
                     """
                     TRUNCATE TABLE
-                        movimiento,
                         producto_lote,
-                        producto,
-                        producto_catalogo
+                        movimiento,
+                        producto
                     RESTART IDENTITY CASCADE;
                     """
                 )
             )
         else:
-            session.exec(text("DELETE FROM movimiento"))
-            session.exec(text("DELETE FROM producto_lote"))
-            session.exec(text("DELETE FROM producto"))
-            session.exec(text("DELETE FROM producto_catalogo"))
-
-            session.exec(text("ALTER TABLE movimiento AUTO_INCREMENT = 1"))
-            session.exec(text("ALTER TABLE producto_lote AUTO_INCREMENT = 1"))
-            session.exec(text("ALTER TABLE producto AUTO_INCREMENT = 1"))
-            session.exec(text("ALTER TABLE producto_catalogo AUTO_INCREMENT = 1"))
+            session.exec(text("DELETE FROM producto_lote;"))
+            session.exec(text("DELETE FROM movimiento;"))
+            session.exec(text("DELETE FROM producto;"))
 
         session.commit()
 
         return {
-            "mensaje": "Base de datos limpiada correctamente",
-            "database": engine.dialect.name,
-            "tablas_limpiadas": [
-                "movimiento",
-                "producto_lote",
-                "producto",
-                "producto_catalogo",
-            ],
+            "mensaje": "Base limpiada correctamente. Se eliminaron productos, lotes y movimientos.",
         }
 
     except Exception as e:
         session.rollback()
-        print(f"❌ Error limpiando base de datos: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"❌ Error limpiando base: {e}")
 
-
-# ==========================================================
-# LOCAL DEV
-# ==========================================================
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run("main:app", host="0.0.0.0", port=10000)
+        raise HTTPException(
+            status_code=500,
+            detail=f"No se pudo limpiar la base: {str(e)}",
+        )
