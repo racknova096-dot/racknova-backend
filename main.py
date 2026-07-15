@@ -786,14 +786,60 @@ def descontar_lotes_fefo(
 
 
 # ==========================================================
-# UTILIDADES IA
+# UTILIDADES IA — RACKNOVA
 # ==========================================================
 
-def calcular_dias_caducidad(caducidad_value: Optional[date]):
-    if not caducidad_value:
+
+def numero_seguro(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return default
+
+
+def entero_seguro(value: Any, default: int = 0) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return default
+
+
+def dinero(value: Any) -> float:
+    return round(numero_seguro(value), 2)
+
+
+def fecha_texto(value: Optional[datetime]) -> Optional[str]:
+    if not value:
         return None
 
-    return (caducidad_value - mexico_now().date()).days
+    return value.isoformat(
+        sep=" ",
+        timespec="seconds",
+    )
+
+
+def dias_desde(value: Optional[datetime]) -> Optional[int]:
+    if not value:
+        return None
+
+    return max(
+        (
+            mexico_now().date()
+            - value.date()
+        ).days,
+        0,
+    )
+
+
+def dias_para_caducar(
+    value: Optional[date],
+) -> Optional[int]:
+    if not value:
+        return None
+
+    return (
+        value - mexico_now().date()
+    ).days
 
 
 def construir_resumen_inventario(
@@ -801,284 +847,1522 @@ def construir_resumen_inventario(
     movimientos: List[Movimiento],
     session: Optional[Session] = None,
 ) -> Dict[str, Any]:
-    ventas_por_sku: Dict[str, Dict[str, Any]] = {}
-    ingresos_por_sku: Dict[str, Dict[str, Any]] = {}
+    """
+    Calcula todas las cifras utilizando Python.
 
-    for mov in movimientos:
-        sku = mov.sku
+    DeepSeek no calcula nuevamente los totales.
+    Solamente interpreta los resultados y propone acciones.
+    """
 
-        if mov.accion == "Egreso":
-            if sku not in ventas_por_sku:
-                ventas_por_sku[sku] = {
-                    "sku": sku,
-                    "producto": mov.producto,
-                    "cantidad_vendida": 0,
-                    "ingreso_total": 0,
-                    "costo_total": 0,
-                    "ganancia_total": 0,
+    ventas: Dict[str, Dict[str, Any]] = {}
+    entradas: Dict[str, Dict[str, Any]] = {}
+    ediciones: Dict[str, int] = {}
+
+    inconsistencias_financieras: List[
+        Dict[str, Any]
+    ] = []
+
+    total_ingresos = 0.0
+    total_costos = 0.0
+    total_vendido = 0
+    total_ingresado = 0
+    inversion_historica = 0.0
+0.0
+    total_vendido = 0
+    total_ingresado = 0
+    inversion    movimientos_venta = 0
+    movimientos_ingreso = 0
+
+    ahora = mexico_now()
+
+    inicio_30 = ahora - timedelta(days=30)
+    inicio_60 = ahora - timedelta(days=60)
+
+    unidades_30 = 0
+    unidades_30_previas = 0
+
+    ingresos_30 = 0.0
+    ingresos_30_previos = 0.0
+
+    movimientos_ordenados = sorted(
+        movimientos,
+        key=lambda item: item.fecha,
+    )
+
+    for mov in movimientos_ordenados:
+        sku = str(
+            mov.sku or ""
+        ).strip()
+
+        accion = str(
+            mov.accion or ""
+        ).strip().lower()
+
+        if not sku:
+            continue
+
+        cantidad = max(
+            entero_seguro(mov.cantidad),
+            0,
+        )
+
+        ingreso = dinero(
+            mov.ingreso_total
+        )
+
+        costo = dinero(
+            mov.costo_total
+        )
+
+        ganancia_calculada = dinero(
+            ingreso - costo
+        )
+
+        ganancia_guardada = dinero(
+            mov.ganancia
+        )
+
+        if accion == "egreso":
+            movimientos_venta += 1
+            total_vendido += cantidad
+            total_ingresos += ingreso
+            total_costos += costo
+
+            if mov.fecha >= inicio_30:
+                unidades_30 += cantidad
+                ingresos_30 += ingreso
+
+            elif mov.fecha >= inicio_60:
+                unidades_30_previas += cantidad
+                ingresos_30_previos += ingreso
+
+            item = ventas.setdefault(
+                sku,
+                {
+                    "cantidad": 0,
+                    "movimientos": 0,
+                    "ingresos": 0.0,
+                    "costos": 0.0,
+                    "ganancia": 0.0,
+                    "primera_venta": None,
                     "ultima_venta": None,
-                }
+                },
+            )
 
-            ventas_por_sku[sku]["cantidad_vendida"] += mov.cantidad or 0
-            ventas_por_sku[sku]["ingreso_total"] += mov.ingreso_total or 0
-            ventas_por_sku[sku]["costo_total"] += mov.costo_total or 0
-            ventas_por_sku[sku]["ganancia_total"] += mov.ganancia or 0
+            item["cantidad"] += cantidad
+            item["movimientos"] += 1
+
+            item["ingresos"] = dinero(
+                item["ingresos"]
+                + ingreso
+            )
+
+            item["costos"] = dinero(
+                item["costos"]
+                + costo
+            )
+
+            item["ganancia"] = dinero(
+                item["ganancia"]
+                + ganancia_calculada
+            )
+
+            if item["primera_venta"] is None:
+                item["primera_venta"] = mov.fecha
+
+            item["ultima_venta"] = mov.fecha
+
+            if abs(
+                ganancia_guardada
+                - ganancia_calculada
+            ) > 0.02:
+                inconsistencias_financieras.append(
+                    {
+                        "id_movimiento": mov.id_mov,
+                        "sku": sku,
+                        "tipo": (
+                            "ganancia_guardada_no_coincide"
+                        ),
+                        "guardada": ganancia_guardada,
+                        "calculada": ganancia_calculada,
+                    }
+                )
+
+            precio_unitario = dinero(
+                mov.precio_venta
+            )
 
             if (
-                ventas_por_sku[sku]["ultima_venta"] is None
-                or mov.fecha > ventas_por_sku[sku]["ultima_venta"]
+                cantidad > 0
+                and precio_unitario > 0
             ):
-                ventas_por_sku[sku]["ultima_venta"] = mov.fecha
+                ingreso_esperado = dinero(
+                    cantidad * precio_unitario
+                )
 
-        if mov.accion == "Ingreso":
-            if sku not in ingresos_por_sku:
-                ingresos_por_sku[sku] = {
-                    "sku": sku,
-                    "producto": mov.producto,
-                    "cantidad_ingresada": 0,
-                    "costo_total_ingresado": 0,
+                if abs(
+                    ingreso - ingreso_esperado
+                ) > 0.02:
+                    inconsistencias_financieras.append(
+                        {
+                            "id_movimiento": mov.id_mov,
+                            "sku": sku,
+                            "tipo": (
+                                "ingreso_total_no_coincide"
+                            ),
+                            "guardado": ingreso,
+                            "calculado": ingreso_esperado,
+                        }
+                    )
+
+        elif accion == "ingreso":
+            movimientos_ingreso += 1
+            total_ingresado += cantidad
+            inversion_historica += costo
+
+            item = entradas.setdefault(
+                sku,
+                {
+                    "cantidad": 0,
+                    "movimientos": 0,
+                    "costo": 0.0,
                     "ultima_entrada": None,
-                }
+                },
+            )
 
-            ingresos_por_sku[sku]["cantidad_ingresada"] += mov.cantidad or 0
-            ingresos_por_sku[sku]["costo_total_ingresado"] += mov.costo_total or 0
+            item["cantidad"] += cantidad
+            item["movimientos"] += 1
 
-            if (
-                ingresos_por_sku[sku]["ultima_entrada"] is None
-                or mov.fecha > ingresos_por_sku[sku]["ultima_entrada"]
-            ):
-                ingresos_por_sku[sku]["ultima_entrada"] = mov.fecha
+            item["costo"] = dinero(
+                item["costo"]
+                + costo
+            )
 
-    productos_resumen = []
+            item["ultima_entrada"] = mov.fecha
+
+        elif accion in {
+            "edición",
+            "edicion",
+        }:
+            ediciones[sku] = (
+                ediciones.get(sku, 0)
+                + 1
+            )
+
+    total_ingresos = dinero(
+        total_ingresos
+    )
+
+    total_costos = dinero(
+        total_costos
+    )
+
+    ganancia_historica = dinero(
+        total_ingresos
+        - total_costos
+    )
+
+    inversion_historica = dinero(
+        inversion_historica
+    )
+
+    margen_historico = (
+        round(
+            (
+                ganancia_historica
+                / total_ingresos
+            ) * 100,
+            2,
+        )
+        if total_ingresos > 0
+        else 0.0
+    )
+
+    porcentaje_recuperado = (
+        round(
+            (
+                total_ingresos
+                / inversion_historica
+            ) * 100,
+            2,
+        )
+        if inversion_historica > 0
+        else 0.0
+    )
+
+    roi = (
+        round(
+            (
+                ganancia_historica
+                / inversion_historica
+            ) * 100,
+            2,
+        )
+        if inversion_historica > 0
+        else 0.0
+    )
+
+    variacion_unidades = None
+
+    if unidades_30_previas > 0:
+        variacion_unidades = round(
+            (
+                (
+                    unidades_30
+                    - unidades_30_previas
+                )
+                / unidades_30_previas
+            ) * 100,
+            2,
+        )
+
+    variacion_ingresos = None
+
+    if ingresos_30_previos > 0:
+        variacion_ingresos = round(
+            (
+                (
+                    ingresos_30
+                    - ingresos_30_previos
+                )
+                / ingresos_30_previos
+            ) * 100,
+            2,
+        )
+
+    productos_resumen: List[
+        Dict[str, Any]
+    ] = []
+
+    diagnosticos_stock: List[
+        Dict[str, Any]
+    ] = []
+
+    sin_historial_entrada = 0
+    sin_costo = 0
+    sin_precio = 0
+
+    unidades_stock = 0
+
+    valor_inventario_costo = 0.0
+    valor_inventario_venta = 0.0
 
     for producto in productos:
-        venta = ventas_por_sku.get(producto.sku, {})
+        venta = ventas.get(
+            producto.sku,
+            {},
+        )
 
-        cantidad_vendida = venta.get("cantidad_vendida", 0)
-        ingreso_total = venta.get("ingreso_total", 0)
-        ganancia_total = venta.get("ganancia_total", 0)
+        entrada = entradas.get(
+            producto.sku,
+            {},
+        )
 
-        margen = 0
+        stock = max(
+            entero_seguro(
+                producto.cantidad
+            ),
+            0,
+        )
 
-        if ingreso_total > 0:
-            margen = (ganancia_total / ingreso_total) * 100
+        stock_minimo = max(
+            entero_seguro(
+                producto.stock_minimo,
+                10,
+            ),
+            0,
+        )
 
-        cantidad_ingresada_estimada = producto.cantidad + cantidad_vendida
+        stock_alto = max(
+            entero_seguro(
+                producto.stock_alto,
+                stock_minimo * 3,
+            ),
+            stock_minimo,
+        )
 
-        porcentaje_vendido = 0
+        costo_unitario = dinero(
+            producto.costo_proveedor
+        )
 
-        if cantidad_ingresada_estimada > 0:
-            porcentaje_vendido = (
-                cantidad_vendida / cantidad_ingresada_estimada
-            ) * 100
+        precio_sugerido = dinero(
+            producto.precio_venta_sugerido
+        )
 
-        dias_caducidad = calcular_dias_caducidad(producto.caducidad)
+        valor_costo = dinero(
+            stock * costo_unitario
+        )
 
-        lotes_resumen = []
+        valor_venta = dinero(
+            stock * precio_sugerido
+        )
 
-        if session:
-            for lote in obtener_lotes_activos(session, producto.sku):
-                lotes_resumen.append(
+        unidades_stock += stock
+        valor_inventario_costo += valor_costo
+        valor_inventario_venta += valor_venta
+
+        if costo_unitario <= 0:
+            sin_costo += 1
+
+        if precio_sugerido <= 0:
+            sin_precio += 1
+
+        cantidad_vendida = entero_seguro(
+            venta.get("cantidad")
+        )
+
+        cantidad_ingresada = entero_seguro(
+            entrada.get("cantidad")
+        )
+
+        ingresos_producto = dinero(
+            venta.get("ingresos")
+        )
+
+        costos_producto = dinero(
+            venta.get("costos")
+        )
+
+        ganancia_producto = dinero(
+            ingresos_producto
+            - costos_producto
+        )
+
+        margen_producto = (
+            round(
+                (
+                    ganancia_producto
+                    / ingresos_producto
+                ) * 100,
+                2,
+            )
+            if ingresos_producto > 0
+            else 0.0
+        )
+
+        historial_entrada = (
+            cantidad_ingresada > 0
+        )
+
+        if not historial_entrada:
+            sin_historial_entrada += 1
+
+        porcentaje_vendido = None
+
+        if historial_entrada:
+            porcentaje_vendido = round(
+                (
+                    cantidad_vendida
+                    / cantidad_ingresada
+                ) * 100,
+                2,
+            )
+
+            stock_teorico = (
+                cantidad_ingresada
+                - cantidad_vendida
+            )
+
+            diferencia = (
+                stock - stock_teorico
+            )
+
+            if diferencia != 0:
+                diagnosticos_stock.append(
                     {
-                        "id_lote": lote.id_lote,
-                        "cantidad_actual": lote.cantidad_actual,
-                        "caducidad": str(lote.caducidad) if lote.caducidad else None,
-                        "dias_para_caducar": calcular_dias_caducidad(
-                            lote.caducidad
+                        "sku": producto.sku,
+                        "producto": producto.nombre,
+                        "stock_actual": stock,
+                        "stock_segun_ingresos_menos_egresos": (
+                            stock_teorico
+                        ),
+                        "diferencia": diferencia,
+                        "ediciones_registradas": (
+                            ediciones.get(
+                                producto.sku,
+                                0,
+                            )
+                        ),
+                        "nota": (
+                            "Diagnóstico, no error confirmado. "
+                            "Puede existir stock inicial, una "
+                            "edición o historial incompleto."
                         ),
                     }
+                )
+
+        if stock <= stock_minimo:
+            estado_stock = "bajo"
+
+        elif stock >= stock_alto:
+            estado_stock = "alto"
+
+        else:
+            estado_stock = "normal"
+
+        ultima_venta = venta.get(
+            "ultima_venta"
+        )
+
+        dias_sin_venta = dias_desde(
+            ultima_venta
+        )
+
+        dias_sin_ventas_desde_registro = (
+            dias_desde(
+                producto.fecha_registro
+            )
+            if not ultima_venta
+            else None
+        )
+
+        lotes_activos = 0
+        unidades_lotes = 0
+        caducidad_lote_proxima = None
+
+        if session:
+            lotes = obtener_lotes_activos(
+                session,
+                producto.sku,
+            )
+
+            lotes_activos = len(lotes)
+
+            unidades_lotes = sum(
+                max(
+                    entero_seguro(
+                        lote.cantidad_actual
+                    ),
+                    0,
+                )
+                for lote in lotes
+            )
+
+            fechas_lote = [
+                lote.caducidad
+                for lote in lotes
+                if lote.caducidad is not None
+            ]
+
+            if fechas_lote:
+                caducidad_lote_proxima = min(
+                    fechas_lote
                 )
 
         productos_resumen.append(
             {
                 "sku": producto.sku,
                 "nombre": producto.nombre,
-                "stock_actual": producto.cantidad,
-                "stock_minimo": producto.stock_minimo,
-                "stock_alto": producto.stock_alto,
-                "ubicacion": f"{producto.rack}-{producto.nivel}-{producto.slot}",
-                "costo_proveedor": producto.costo_proveedor,
-                "precio_venta_sugerido": producto.precio_venta_sugerido,
-                "caducidad_mas_proxima": str(producto.caducidad)
-                if producto.caducidad
-                else None,
-                "dias_para_caducar": dias_caducidad,
-                "lotes_activos": lotes_resumen,
-                "cantidad_vendida": cantidad_vendida,
-                "cantidad_ingresada_estimada": cantidad_ingresada_estimada,
-                "porcentaje_vendido_inventario": round(porcentaje_vendido, 2),
-                "ingreso_total": ingreso_total,
-                "ganancia_total": ganancia_total,
-                "margen_porcentaje": round(margen, 2),
-                "ultima_venta": str(venta.get("ultima_venta"))
-                if venta.get("ultima_venta")
-                else None,
+                "ubicacion": (
+                    f"{producto.rack}-"
+                    f"{producto.nivel}-"
+                    f"{producto.slot}"
+                ),
+                "stock_actual": stock,
+                "stock_minimo": stock_minimo,
+                "stock_alto": stock_alto,
+                "estado_stock": estado_stock,
+                "costo_unitario": costo_unitario,
+                "precio_venta_sugerido": (
+                    precio_sugerido
+                ),
+                "valor_stock_costo": valor_costo,
+                "valor_stock_venta": valor_venta,
+                "cantidad_vendida_registrada": (
+                    cantidad_vendida
+                ),
+                "movimientos_venta_registrados": (
+                    entero_seguro(
+                        venta.get("movimientos")
+                    )
+                ),
+                "cantidad_ingresada_registrada": (
+                    cantidad_ingresada
+                    if historial_entrada
+                    else None
+                ),
+                "porcentaje_vendido_sobre_ingresos_registrados": (
+                    porcentaje_vendido
+                ),
+                "confiabilidad_rotacion": (
+                    "alta"
+                    if historial_entrada
+                    else "limitada"
+                ),
+                "ingresos_ventas": ingresos_producto,
+                "costos_vendidos": costos_producto,
+                "ganancia_calculada": (
+                    ganancia_producto
+                ),
+                "margen_porcentaje": (
+                    margen_producto
+                ),
+                "ultima_venta": fecha_texto(
+                    ultima_venta
+                ),
+                "dias_sin_venta_registrada": (
+                    dias_sin_venta
+                ),
+                "dias_desde_registro_sin_ventas": (
+                    dias_sin_ventas_desde_registro
+                ),
+                "fecha_registro": fecha_texto(
+                    producto.fecha_registro
+                ),
+                "caducidad": (
+                    str(producto.caducidad)
+                    if producto.caducidad
+                    else None
+                ),
+                "dias_para_caducar": (
+                    dias_para_caducar(
+                        producto.caducidad
+                    )
+                ),
+                "lotes_activos": lotes_activos,
+                "unidades_en_lotes": (
+                    unidades_lotes
+                ),
+                "caducidad_lote_mas_proxima": (
+                    str(caducidad_lote_proxima)
+                    if caducidad_lote_proxima
+                    else None
+                ),
             }
         )
 
-    movimientos_recientes = sorted(
-        movimientos,
-        key=lambda m: m.fecha,
-        reverse=True,
-    )[:40]
+    sin_ventas_todos = [
+        producto
+        for producto in productos_resumen
+        if (
+            producto["stock_actual"] > 0
+            and producto[
+                "cantidad_vendida_registrada"
+            ] == 0
+        )
+    ]
+
+    rankings = {
+        "mas_vendidos": sorted(
+            productos_resumen,
+            key=lambda producto: (
+                producto[
+                    "cantidad_vendida_registrada"
+                ],
+                producto["ingresos_ventas"],
+            ),
+            reverse=True,
+        )[:10],
+
+        "sin_ventas": sorted(
+            sin_ventas_todos,
+            key=lambda producto: (
+                producto[
+                    "dias_desde_registro_sin_ventas"
+                ] or 0,
+                producto["valor_stock_costo"],
+            ),
+            reverse=True,
+        )[:15],
+
+        "baja_rotacion": sorted(
+            [
+                producto
+                for producto in productos_resumen
+                if (
+                    producto["stock_actual"] > 0
+                    and producto[
+                        "cantidad_vendida_registrada"
+                    ] > 0
+                    and (
+                        producto[
+                            "cantidad_vendida_registrada"
+                        ] <= 2
+                        or (
+                            producto[
+                                "dias_sin_venta_registrada"
+                            ] is not None
+                            and producto[
+                                "dias_sin_venta_registrada"
+                            ] >= 30
+                        )
+                    )
+                )
+            ],
+            key=lambda producto: (
+                -(
+                    producto[
+                        "dias_sin_venta_registrada"
+                    ] or 0
+                ),
+                producto[
+                    "cantidad_vendida_registrada"
+                ],
+            ),
+        )[:15],
+
+        "stock_bajo": sorted(
+            [
+                producto
+                for producto in productos_resumen
+                if producto[
+                    "estado_stock"
+                ] == "bajo"
+            ],
+            key=lambda producto: (
+                producto["stock_actual"]
+            ),
+        )[:15],
+
+        "stock_alto": sorted(
+            [
+                producto
+                for producto in productos_resumen
+                if producto[
+                    "estado_stock"
+                ] == "alto"
+            ],
+            key=lambda producto: (
+                producto["valor_stock_costo"]
+            ),
+            reverse=True,
+        )[:15],
+
+        "vencidos": sorted(
+            [
+                producto
+                for producto in productos_resumen
+                if (
+                    producto[
+                        "dias_para_caducar"
+                    ] is not None
+                    and producto[
+                        "dias_para_caducar"
+                    ] < 0
+                )
+            ],
+            key=lambda producto: (
+                producto["dias_para_caducar"]
+            ),
+        )[:15],
+
+        "por_caducar": sorted(
+            [
+                producto
+                for producto in productos_resumen
+                if (
+                    producto[
+                        "dias_para_caducar"
+                    ] is not None
+                    and 0
+                    <= producto[
+                        "dias_para_caducar"
+                    ]
+                    <= 30
+                )
+            ],
+            key=lambda producto: (
+                producto["dias_para_caducar"]
+            ),
+        )[:15],
+
+        "mas_rentables": sorted(
+            [
+                producto
+                for producto in productos_resumen
+                if producto[
+                    "ingresos_ventas"
+                ] > 0
+            ],
+            key=lambda producto: (
+                producto[
+                    "ganancia_calculada"
+                ]
+            ),
+            reverse=True,
+        )[:10],
+
+        "margen_bajo": sorted(
+            [
+                producto
+                for producto in productos_resumen
+                if (
+                    producto[
+                        "ingresos_ventas"
+                    ] > 0
+                    and producto[
+                        "margen_porcentaje"
+                    ] < 15
+                )
+            ],
+            key=lambda producto: (
+                producto[
+                    "margen_porcentaje"
+                ]
+            ),
+        )[:10],
+    }
+
+    porcentaje_sin_historial = (
+        (
+            sin_historial_entrada
+            / len(productos)
+        ) * 100
+        if productos
+        else 0
+    )
+
+    if inconsistencias_financieras:
+        nivel_confiabilidad = "limitada"
+
+    elif porcentaje_sin_historial > 30:
+        nivel_confiabilidad = "limitada"
+
+    elif (
+        sin_historial_entrada
+        or diagnosticos_stock
+        or sin_costo
+    ):
+        nivel_confiabilidad = "media"
+
+    else:
+        nivel_confiabilidad = "alta"
 
     return {
-        "fecha_analisis": str(mexico_now()),
-        "total_productos": len(productos),
-        "total_movimientos": len(movimientos),
-        "productos": productos_resumen[:80],
-        "ventas_por_sku": list(ventas_por_sku.values())[:80],
-        "movimientos_recientes": [
-            {
-                "accion": m.accion,
-                "sku": m.sku,
-                "producto": m.producto,
-                "cantidad": m.cantidad,
-                "ubicacion": m.ubicacion,
-                "fecha": str(m.fecha),
-                "precio_venta": m.precio_venta,
-                "ingreso_total": m.ingreso_total,
-                "costo_total": m.costo_total,
-                "ganancia": m.ganancia,
-            }
-            for m in movimientos_recientes
-        ],
+        "fecha_analisis": fecha_texto(
+            ahora
+        ),
+
+        "metricas_calculadas_backend": {
+            "total_productos": len(productos),
+
+            "unidades_stock_actual": (
+                unidades_stock
+            ),
+
+            "valor_inventario_a_costo": dinero(
+                valor_inventario_costo
+            ),
+
+            "valor_inventario_a_precio_sugerido": (
+                dinero(
+                    valor_inventario_venta
+                )
+            ),
+
+            "movimientos_totales": len(
+                movimientos
+            ),
+
+            "movimientos_venta_registrados": (
+                movimientos_venta
+            ),
+
+            "unidades_vendidas_registradas": (
+                total_vendido
+            ),
+
+            "ingresos_totales_ventas": (
+                total_ingresos
+            ),
+
+            "costos_totales_vendidos": (
+                total_costos
+            ),
+
+            "ganancia_historica_calculada": (
+                ganancia_historica
+            ),
+
+            "margen_historico_porcentaje": (
+                margen_historico
+            ),
+
+            "inversion_historica_inventario": (
+                inversion_historica
+            ),
+
+            "capital_recuperado": (
+                total_ingresos
+            ),
+
+            "pendiente_por_recuperar": dinero(
+                max(
+                    inversion_historica
+                    - total_ingresos,
+                    0,
+                )
+            ),
+
+            "porcentaje_recuperado": (
+                porcentaje_recuperado
+            ),
+
+            "roi_inventario_porcentaje": roi,
+
+            "unidades_ingresadas_registradas": (
+                total_ingresado
+            ),
+
+            "movimientos_ingreso_registrados": (
+                movimientos_ingreso
+            ),
+
+            "productos_sin_ventas_registradas": (
+                len(sin_ventas_todos)
+            ),
+
+            "capital_en_productos_sin_ventas": (
+                dinero(
+                    sum(
+                        producto[
+                            "valor_stock_costo"
+                        ]
+                        for producto
+                        in sin_ventas_todos
+                    )
+                )
+            ),
+        },
+
+        "comparacion_30_dias": {
+            "unidades_ultimos_30_dias": (
+                unidades_30
+            ),
+
+            "unidades_30_dias_anteriores": (
+                unidades_30_previas
+            ),
+
+            "variacion_unidades_porcentaje": (
+                variacion_unidades
+            ),
+
+            "ingresos_ultimos_30_dias": (
+                dinero(ingresos_30)
+            ),
+
+            "ingresos_30_dias_anteriores": (
+                dinero(ingresos_30_previos)
+            ),
+
+            "variacion_ingresos_porcentaje": (
+                variacion_ingresos
+            ),
+
+            "nota": (
+                "La variación es null cuando "
+                "el periodo anterior no tiene "
+                "una base distinta de cero."
+            ),
+        },
+
+        "calidad_datos": {
+            "nivel_confiabilidad": (
+                nivel_confiabilidad
+            ),
+
+            "productos_sin_historial_entrada": (
+                sin_historial_entrada
+            ),
+
+            "productos_sin_costo": sin_costo,
+
+            "productos_sin_precio": (
+                sin_precio
+            ),
+
+            "diagnosticos_stock": len(
+                diagnosticos_stock
+            ),
+
+            "inconsistencias_financieras": (
+                len(
+                    inconsistencias_financieras
+                )
+            ),
+
+            "nota": (
+                "Las ganancias se recalcularon "
+                "como ingresos menos costos. "
+                "Los diagnósticos de stock no "
+                "son errores confirmados."
+            ),
+        },
+
+        "alertas_calidad": {
+            "diagnosticos_stock": (
+                diagnosticos_stock[:10]
+            ),
+
+            "inconsistencias_financieras": (
+                inconsistencias_financieras[
+                    :10
+                ]
+            ),
+        },
+
+        "criterios": {
+            "sin_ventas": (
+                "Stock mayor que cero y ninguna "
+                "unidad vendida en los movimientos "
+                "registrados."
+            ),
+
+            "baja_rotacion": (
+                "Tiene ventas registradas, pero "
+                "vendió dos unidades o menos, o "
+                "lleva 30 días o más sin venta "
+                "registrada."
+            ),
+
+            "stock_bajo": (
+                "Stock actual menor o igual al "
+                "mínimo."
+            ),
+
+            "stock_alto": (
+                "Stock actual mayor o igual al "
+                "stock alto."
+            ),
+        },
+
+        "rankings": rankings,
+
+        "productos": productos_resumen,
     }
 
 
-def generar_respuesta_fallback(pregunta: str, resumen: Dict[str, Any]) -> str:
-    productos = resumen.get("productos", [])
+def seleccionar_contexto_ia(
+    pregunta: str,
+    resumen: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Envía únicamente el contexto relacionado con la pregunta.
+    Esto reduce tokens y evita saturar al modelo.
+    """
 
-    vencidos = [
-        p for p in productos
-        if p.get("dias_para_caducar") is not None
-        and p.get("dias_para_caducar") < 0
+    texto = pregunta.lower()
+    rankings = resumen["rankings"]
+
+    contexto: Dict[str, Any] = {
+        "fecha_analisis": (
+            resumen["fecha_analisis"]
+        ),
+
+        "metricas_calculadas_backend": (
+            resumen[
+                "metricas_calculadas_backend"
+            ]
+        ),
+
+        "comparacion_30_dias": (
+            resumen["comparacion_30_dias"]
+        ),
+
+        "calidad_datos": (
+            resumen["calidad_datos"]
+        ),
+
+        "criterios": resumen["criterios"],
+    }
+
+    palabras_ventas = [
+        "venta",
+        "vendo",
+        "vender",
+        "vendido",
+        "rotación",
+        "rotacion",
+        "demanda",
+        "promoción",
+        "promocion",
     ]
 
-    proximos_caducar = [
-        p for p in productos
-        if p.get("dias_para_caducar") is not None
-        and 0 <= p.get("dias_para_caducar") <= 30
+    if any(
+        palabra in texto
+        for palabra in palabras_ventas
+    ):
+        contexto["ventas"] = {
+            "mas_vendidos": (
+                rankings["mas_vendidos"]
+            ),
+
+            "sin_ventas": (
+                rankings["sin_ventas"]
+            ),
+
+            "baja_rotacion": (
+                rankings["baja_rotacion"]
+            ),
+        }
+
+    palabras_ubicacion = [
+        "ubicación",
+        "ubicacion",
+        "mover",
+        "reubicar",
+        "rack",
+        "slot",
+        "posición",
+        "posicion",
     ]
 
-    stock_bajo = [
-        p for p in productos
-        if p.get("stock_actual", 0) <= p.get("stock_minimo", 10)
+    if any(
+        palabra in texto
+        for palabra in palabras_ubicacion
+    ):
+        contexto["ubicacion"] = {
+            "mas_vendidos": (
+                rankings["mas_vendidos"]
+            ),
+
+            "sin_ventas": (
+                rankings["sin_ventas"]
+            ),
+
+            "nota": (
+                "La ubicación puede probarse, "
+                "pero los datos no demuestran "
+                "por sí solos causalidad."
+            ),
+        }
+
+    palabras_stock = [
+        "stock",
+        "inventario",
+        "resurtir",
+        "restock",
+        "comprar",
+        "compra",
+        "reorden",
+        "desabasto",
+        "exceso",
     ]
 
-    baja_rotacion = [
-        p for p in productos
-        if p.get("stock_actual", 0) > 0
-        and (
-            p.get("cantidad_vendida", 0) == 0
-            or p.get("porcentaje_vendido_inventario", 0) < 30
+    if any(
+        palabra in texto
+        for palabra in palabras_stock
+    ):
+        contexto["stock"] = {
+            "stock_bajo": (
+                rankings["stock_bajo"]
+            ),
+
+            "stock_alto": (
+                rankings["stock_alto"]
+            ),
+        }
+
+    palabras_finanzas = [
+        "ganancia",
+        "margen",
+        "rentable",
+        "rentabilidad",
+        "dinero",
+        "ingreso",
+        "costo",
+        "capital",
+        "inversión",
+        "inversion",
+        "finanzas",
+        "roi",
+    ]
+
+    if any(
+        palabra in texto
+        for palabra in palabras_finanzas
+    ):
+        contexto["finanzas"] = {
+            "mas_rentables": (
+                rankings["mas_rentables"]
+            ),
+
+            "margen_bajo": (
+                rankings["margen_bajo"]
+            ),
+        }
+
+    palabras_caducidad = [
+        "caduca",
+        "caducidad",
+        "vencido",
+        "vencimiento",
+        "descuento",
+        "merma",
+        "lote",
+    ]
+
+    if any(
+        palabra in texto
+        for palabra in palabras_caducidad
+    ):
+        contexto["caducidad"] = {
+            "vencidos": (
+                rankings["vencidos"]
+            ),
+
+            "por_caducar": (
+                rankings["por_caducar"]
+            ),
+        }
+
+    coincidencias = []
+
+    for producto in resumen["productos"]:
+        sku = str(
+            producto["sku"] or ""
+        ).lower()
+
+        nombre = str(
+            producto["nombre"] or ""
+        ).lower()
+
+        palabras_nombre = [
+            palabra
+            for palabra
+            in nombre.replace(
+                "-",
+                " ",
+            ).split()
+            if len(palabra) >= 4
+        ]
+
+        if (
+            (
+                sku
+                and sku in texto
+            )
+            or (
+                nombre
+                and nombre in texto
+            )
+            or any(
+                palabra in texto
+                for palabra in palabras_nombre
+            )
+        ):
+            coincidencias.append(
+                producto
+            )
+
+    if coincidencias:
+        contexto[
+            "productos_consultados"
+        ] = coincidencias[:10]
+
+    if len(contexto) == 5:
+        contexto["resumen_general"] = {
+            "mas_vendidos": (
+                rankings[
+                    "mas_vendidos"
+                ][:5]
+            ),
+
+            "sin_ventas": (
+                rankings[
+                    "sin_ventas"
+                ][:5]
+            ),
+
+            "stock_bajo": (
+                rankings[
+                    "stock_bajo"
+                ][:5]
+            ),
+
+            "por_caducar": (
+                rankings[
+                    "por_caducar"
+                ][:5]
+            ),
+
+            "mas_rentables": (
+                rankings[
+                    "mas_rentables"
+                ][:5]
+            ),
+        }
+
+    if (
+        resumen["calidad_datos"][
+            "nivel_confiabilidad"
+        ]
+        != "alta"
+    ):
+        contexto["alertas_calidad"] = (
+            resumen["alertas_calidad"]
         )
+
+    return contexto
+
+
+def generar_respuesta_fallback(
+    pregunta: str,
+    resumen: Dict[str, Any],
+) -> str:
+    metricas = resumen[
+        "metricas_calculadas_backend"
     ]
 
-    rentables = [
-        p for p in productos
-        if p.get("margen_porcentaje", 0) >= 30
-        and p.get("ganancia_total", 0) > 0
+    calidad = resumen[
+        "calidad_datos"
     ]
 
-    respuesta = [
-        "RACKNOVA IA funcionó en modo automático interno.",
+    sin_ventas = resumen[
+        "rankings"
+    ]["sin_ventas"][:5]
+
+    stock_bajo = resumen[
+        "rankings"
+    ]["stock_bajo"][:5]
+
+    partes = [
+        (
+            "RackNova IA utilizó el motor "
+            "interno de análisis."
+        ),
         "",
-        "El modelo externo no respondió correctamente, pero se generó un análisis con reglas internas de RackNova.",
-        "",
+        (
+            f"Hay "
+            f"{metricas['total_productos']} "
+            f"productos y "
+            f"{metricas['unidades_stock_actual']} "
+            f"unidades en stock. Los ingresos "
+            f"históricos registrados son "
+            f"${metricas['ingresos_totales_ventas']:.2f}; "
+            f"la ganancia calculada es "
+            f"${metricas['ganancia_historica_calculada']:.2f}."
+        ),
     ]
 
-    if vencidos:
-        respuesta.append("Productos vencidos:")
+    if (
+        calidad["nivel_confiabilidad"]
+        != "alta"
+    ):
+        partes.extend(
+            [
+                "",
+                (
+                    "Advertencia: el historial tiene "
+                    "confiabilidad "
+                    f"{calidad['nivel_confiabilidad']}. "
+                    "Las cifras se refieren a los "
+                    "movimientos registrados."
+                ),
+            ]
+        )
 
-        for p in vencidos[:5]:
-            respuesta.append(
-                f"- {p.get('nombre')} ({p.get('sku')}) está vencido. "
-                f"Recomendación: retirar o registrar merma. "
-                f"Ubicación: {p.get('ubicacion')}."
+    if sin_ventas:
+        partes.extend(
+            [
+                "",
+                (
+                    "Productos sin ventas "
+                    "registradas:"
+                ),
+            ]
+        )
+
+        for producto in sin_ventas:
+            partes.append(
+                f"- {producto['nombre']} "
+                f"({producto['sku']}), "
+                f"stock "
+                f"{producto['stock_actual']}, "
+                f"ubicación "
+                f"{producto['ubicacion']}."
             )
 
-        respuesta.append("")
-
-    if proximos_caducar:
-        respuesta.append("Productos próximos a caducar:")
-
-        for p in sorted(
-            proximos_caducar,
-            key=lambda x: x.get("dias_para_caducar", 9999),
-        )[:5]:
-            dias = p.get("dias_para_caducar")
-
-            if dias <= 5:
-                descuento = 40
-            elif dias <= 10:
-                descuento = 30
-            elif dias <= 15:
-                descuento = 20
-            else:
-                descuento = 10
-
-            respuesta.append(
-                f"- {p.get('nombre')} ({p.get('sku')}) caduca en {dias} día(s). "
-                f"Sugerencia: descuento del {descuento}% y colocarlo visible."
-            )
-
-        respuesta.append("")
+        partes.append(
+            "Prueba una sola acción durante "
+            "7 a 14 días y compara los "
+            "resultados. La causa exacta no "
+            "puede afirmarse sin datos de "
+            "precio de mercado, promoción "
+            "y demanda."
+        )
 
     if stock_bajo:
-        respuesta.append("Productos con stock bajo:")
-
-        for p in stock_bajo[:5]:
-            respuesta.append(
-                f"- {p.get('nombre')} ({p.get('sku')}): "
-                f"{p.get('stock_actual')} / mínimo {p.get('stock_minimo')}."
-            )
-
-        respuesta.append("")
-
-    if baja_rotacion:
-        respuesta.append("Productos con baja rotación:")
-
-        for p in baja_rotacion[:5]:
-            respuesta.append(
-                f"- {p.get('nombre')} ({p.get('sku')}) tiene baja rotación. "
-                f"Evalúa promoción o cambio de ubicación."
-            )
-
-        respuesta.append("")
-
-    if rentables:
-        respuesta.append("Productos rentables:")
-
-        for p in sorted(
-            rentables,
-            key=lambda x: x.get("ganancia_total", 0),
-            reverse=True,
-        )[:5]:
-            respuesta.append(
-                f"- {p.get('nombre')} ({p.get('sku')}) tiene margen de "
-                f"{p.get('margen_porcentaje')}% y ganancia acumulada de "
-                f"${round(p.get('ganancia_total', 0), 2)}."
-            )
-
-        respuesta.append("")
-
-    if len(respuesta) <= 4:
-        respuesta.append("No se detectaron alertas importantes con los datos actuales.")
-
-    return "\n".join(respuesta)
-
-
-def llamar_deepseek(pregunta: str, resumen: Dict[str, Any]) -> str:
-    api_key = os.getenv("DEEPSEEK_API_KEY")
-
-    if not api_key:
-        raise HTTPException(
-            status_code=500,
-            detail="Falta configurar DEEPSEEK_API_KEY en Render.",
+        partes.extend(
+            [
+                "",
+                "Stock bajo:",
+            ]
         )
 
-    model = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+        for producto in stock_bajo:
+            partes.append(
+                f"- {producto['nombre']}: "
+                f"{producto['stock_actual']} "
+                f"unidades; mínimo "
+                f"{producto['stock_minimo']}."
+            )
+
+    return "\n".join(partes)
+
+
+def solicitar_deepseek(
+    api_key: str,
+    model: str,
+    messages: List[Dict[str, str]],
+    max_tokens: int,
+    user_id: str,
+) -> Dict[str, Any]:
+    payload = {
+        "model": model,
+
+        "messages": messages,
+
+        "thinking": {
+            "type": "disabled",
+        },
+
+        "temperature": 0.1,
+
+        "max_tokens": max_tokens,
+
+        "stream": False,
+
+        "user_id": user_id,
+    }
+
+    request = urllib.request.Request(
+        "https://api.deepseek.com/chat/completions",
+
+        data=json.dumps(
+            payload,
+            ensure_ascii=False,
+        ).encode("utf-8"),
+
+        headers={
+            "Content-Type": (
+                "application/json"
+            ),
+
+            "Authorization": (
+                f"Bearer {api_key}"
+            ),
+        },
+
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=60,
+        ) as response:
+            data = json.loads(
+                response.read().decode(
+                    "utf-8"
+                )
+            )
+
+    except urllib.error.HTTPError as error:
+        body = error.read().decode(
+            "utf-8",
+            errors="replace",
+        )
+
+        raise RuntimeError(
+            f"DeepSeek respondió HTTP "
+            f"{error.code}: {body}"
+        ) from error
+
+    except urllib.error.URLError as error:
+        raise RuntimeError(
+            "No fue posible conectar con "
+            f"DeepSeek: {error.reason}"
+        ) from error
+
+    choices = data.get(
+        "choices"
+    ) or []
+
+    if not choices:
+        return {
+            "content": "",
+            "finish_reason": "empty",
+            "usage": (
+                data.get("usage")
+                or {}
+            ),
+        }
+
+    choice = choices[0]
+
+    return {
+        "content": (
+            choice
+            .get("message", {})
+            .get("content", "")
+            .strip()
+        ),
+
+        "finish_reason": (
+            choice.get(
+                "finish_reason"
+            )
+        ),
+
+        "usage": (
+            data.get("usage")
+            or {}
+        ),
+    }
+
+
+def sumar_tokens(
+    total: Dict[str, int],
+    usage: Dict[str, Any],
+) -> None:
+    campos = [
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+    ]
+
+    for campo in campos:
+        total[campo] += entero_seguro(
+            usage.get(campo)
+        )
+
+
+def llamar_deepseek(
+    pregunta: str,
+    resumen: Dict[str, Any],
+    user_id: str,
+) -> Dict[str, Any]:
+    api_key = os.getenv(
+        "DEEPSEEK_API_KEY"
+    )
+
+    if not api_key:
+        raise RuntimeError(
+            "Falta configurar "
+            "DEEPSEEK_API_KEY."
+        )
+
+    model = os.getenv(
+        "DEEPSEEK_MODEL",
+        "deepseek-v4-flash",
+    )
+
+    user_id_limpio = "".join(
+        caracter
+        if (
+            caracter.isalnum()
+            or caracter in "-_"
+        )
+        else "_"
+        for caracter in user_id
+    )[:512]
+
+    contexto = seleccionar_contexto_ia(
+        pregunta,
+        resumen,
+    )
 
     system_prompt = """
 Eres RackNova IA, el asistente inteligente integrado al Sistema de Gestión de Inventarios RackNova.
@@ -1463,76 +2747,158 @@ Siempre recomienda.
 
 Siempre ayuda.
 
-"""
+""".strip()
 
     user_prompt = f"""
-Pregunta del usuario:
+PREGUNTA
+
 {pregunta}
 
-Resumen del inventario en JSON:
-{json.dumps(resumen, ensure_ascii=False, default=str)}
+DATOS DE RACKNOVA
 
-Responde en español con estilo ejecutivo claro.
-"""
+{json.dumps(
+    contexto,
+    ensure_ascii=False,
+    default=str,
+    separators=(",", ":"),
+)}
 
-    payload = {
-        "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": system_prompt,
-            },
-            {
-                "role": "user",
-                "content": user_prompt,
-            },
-        ],
-        "thinking": {
-            "type": "disabled",
+Usa únicamente estos datos para mencionar cifras.
+
+Cuando una causa no pueda probarse, identifica claramente
+la hipótesis y explica cómo comprobarla.
+""".strip()
+
+    messages = [
+        {
+            "role": "system",
+            "content": system_prompt,
         },
-        "temperature": 0.3,
-        "max_tokens": 1200,
+        {
+            "role": "user",
+            "content": user_prompt,
+        },
+    ]
+
+    uso = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
     }
 
-    request = urllib.request.Request(
-        "https://api.deepseek.com/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
+    primera = solicitar_deepseek(
+        api_key=api_key,
+        model=model,
+        messages=messages,
+        max_tokens=1100,
+        user_id=user_id_limpio,
     )
 
-    try:
-        with urllib.request.urlopen(request, timeout=45) as response:
-            raw = response.read().decode("utf-8")
-            data = json.loads(raw)
+    sumar_tokens(
+        uso,
+        primera["usage"],
+    )
 
-            content = data.get("choices", [{}])[0].get("message", {}).get("content")
+    contenido = primera["content"]
 
-            if content and content.strip():
-                return content.strip()
+    finish_reason = primera[
+        "finish_reason"
+    ]
 
-            return generar_respuesta_fallback(pregunta, resumen)
+    continuaciones = 0
 
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode("utf-8")
-        print("❌ Error DeepSeek:", e.code, error_body)
+    # Solo genera una continuación cuando
+    # DeepSeek confirma que la respuesta se cortó.
+    if (
+        contenido
+        and finish_reason == "length"
+    ):
+        continuaciones = 1
 
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error llamando DeepSeek: {error_body}",
+        messages.extend(
+            [
+                {
+                    "role": "assistant",
+                    "content": contenido,
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Continúa exactamente desde "
+                        "donde terminaste. No repitas "
+                        "datos ni encabezados. Termina "
+                        "las recomendaciones y la "
+                        "conclusión en un máximo de "
+                        "180 palabras."
+                    ),
+                },
+            ]
         )
 
-    except Exception as e:
-        print("❌ Error IA:", e)
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error general de IA: {str(e)}",
+        segunda = solicitar_deepseek(
+            api_key=api_key,
+            model=model,
+            messages=messages,
+            max_tokens=500,
+            user_id=user_id_limpio,
         )
 
+        sumar_tokens(
+            uso,
+            segunda["usage"],
+        )
+
+        if segunda["content"]:
+            contenido = (
+                f"{contenido}\n\n"
+                f"{segunda['content']}"
+            )
+
+        finish_reason = segunda[
+            "finish_reason"
+        ]
+
+    if not contenido:
+        return {
+            "respuesta": (
+                generar_respuesta_fallback(
+                    pregunta,
+                    resumen,
+                )
+            ),
+
+            "fuente": (
+                "motor_interno_fallback"
+            ),
+
+            "completa": True,
+
+            "continuaciones": 0,
+
+            "finish_reason": "fallback",
+
+            "uso_tokens": uso,
+        }
+
+    return {
+        "respuesta": contenido.strip(),
+
+        "fuente": "deepseek",
+
+        "completa": (
+            finish_reason != "length"
+        ),
+
+        "continuaciones": (
+            continuaciones
+        ),
+
+        "finish_reason": (
+            finish_reason
+        ),
+
+        "uso_tokens": uso,
+    }
 
 # ==========================================================
 # ENDPOINTS BASE
@@ -1727,10 +3093,10 @@ def listar_lotes(session: SessionDep, current_user: ReadUserDep):
         ),
     )
 
-
 # ==========================================================
 # IA
 # ==========================================================
+
 
 @app.post("/ia/inventario")
 def analizar_inventario_con_ia(
@@ -1738,61 +3104,145 @@ def analizar_inventario_con_ia(
     session: SessionDep,
     current_user: OperatorUserDep,
 ):
-    pregunta_limpia = data.pregunta.strip()
+    pregunta_limpia = (
+        data.pregunta.strip()
+    )
 
     if not pregunta_limpia:
         raise HTTPException(
             status_code=400,
-            detail="La pregunta no puede estar vacía.",
+            detail=(
+                "La pregunta no puede "
+                "estar vacía."
+            ),
         )
 
-    productos = session.exec(select(Producto)).all()
-    movimientos = session.exec(select(Movimiento)).all()
+    productos = session.exec(
+        select(Producto)
+    ).all()
 
-    resumen = construir_resumen_inventario(productos, movimientos, session)
+    movimientos = session.exec(
+        select(Movimiento)
+    ).all()
 
-    fuente = "deepseek"
-    advertencia = None
+    resumen = construir_resumen_inventario(
+        productos=productos,
+        movimientos=movimientos,
+        session=session,
+    )
 
     try:
-        respuesta = llamar_deepseek(pregunta_limpia, resumen)
+        resultado = llamar_deepseek(
+            pregunta=pregunta_limpia,
+            resumen=resumen,
+            user_id=(
+                f"racknova_"
+                f"{current_user.id_usuario or 'user'}"
+            ),
+        )
 
-        if not respuesta or not respuesta.strip():
-            fuente = "motor_interno_fallback"
+        nivel_confiabilidad = (
+            resumen["calidad_datos"][
+                "nivel_confiabilidad"
+            ]
+        )
+
+        advertencia = None
+
+        if nivel_confiabilidad != "alta":
             advertencia = (
-                "DeepSeek respondió vacío. "
-                "Se generó una respuesta con el motor interno de RackNova."
+                "Existen productos o movimientos "
+                "con historial incompleto o datos "
+                "que requieren revisión. La IA "
+                "separó cifras confirmadas, "
+                "diagnósticos e hipótesis."
             )
-            respuesta = generar_respuesta_fallback(pregunta_limpia, resumen)
 
-    except HTTPException as e:
-        detalle = str(e.detail)
+        return {
+            "respuesta": (
+                resultado["respuesta"]
+            ),
 
-        if "Insufficient Balance" in detalle or "insufficient balance" in detalle.lower():
-            fuente = "motor_interno_fallback"
-            advertencia = (
-                "DeepSeek no tiene saldo suficiente. "
-                "Se generó una respuesta con el motor interno de RackNova."
-            )
-            respuesta = generar_respuesta_fallback(pregunta_limpia, resumen)
-        else:
-            raise e
+            "fuente": (
+                resultado["fuente"]
+            ),
 
-    return {
-        "pregunta": pregunta_limpia,
-        "respuesta": respuesta,
-        "modelo": os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
-        "fuente": fuente,
-        "advertencia": advertencia,
-        "resumen_usado": {
-            "total_productos": resumen["total_productos"],
-            "total_movimientos": resumen["total_movimientos"],
-            "productos_enviados": len(resumen["productos"]),
-            "movimientos_recientes_enviados": len(resumen["movimientos_recientes"]),
-        },
-    }
+            "advertencia": advertencia,
 
+            "completa": (
+                resultado["completa"]
+            ),
 
+            "continuaciones": (
+                resultado["continuaciones"]
+            ),
+
+            "finish_reason": (
+                resultado["finish_reason"]
+            ),
+
+            "uso_tokens": (
+                resultado["uso_tokens"]
+            ),
+
+            "calidad_datos": (
+                resumen["calidad_datos"]
+            ),
+
+            "metricas_backend": (
+                resumen[
+                    "metricas_calculadas_backend"
+                ]
+            ),
+        }
+
+    except Exception as error:
+        print(
+            "❌ Error llamando DeepSeek:",
+            str(error),
+        )
+
+        return {
+            "respuesta": (
+                generar_respuesta_fallback(
+                    pregunta_limpia,
+                    resumen,
+                )
+            ),
+
+            "fuente": (
+                "motor_interno_fallback"
+            ),
+
+            "advertencia": (
+                "DeepSeek no respondió. "
+                "Se utilizó el motor interno "
+                "de RackNova con los datos "
+                "calculados por el backend."
+            ),
+
+            "completa": True,
+
+            "continuaciones": 0,
+
+            "finish_reason": "fallback",
+
+            "uso_tokens": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            },
+
+            "calidad_datos": (
+                resumen["calidad_datos"]
+            ),
+
+            "metricas_backend": (
+                resumen[
+                    "metricas_calculadas_backend"
+                ]
+            ),
+        }
 # ==========================================================
 # PRODUCTOS
 # ==========================================================
