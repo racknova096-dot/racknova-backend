@@ -1121,7 +1121,7 @@ Tu personalidad debe ser:
 
 FORMA DE RESPONDER
 
-Nunca uses viñetas * ni #
+Queda prohibido usar viñetas (*) ni (#)
 
 Nunca seas únicamente un buscador de datos.
 
