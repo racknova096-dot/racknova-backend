@@ -863,14 +863,12 @@ def construir_resumen_inventario(
     ] = []
 
     total_ingresos = 0.0
-    total_costos = 0.0
-    total_vendido = 0
-    total_ingresado = 0
-    inversion_historica = 0.0
-    total_vendido = 0
-    total_ingresado = 0
-    inversion movimientos_venta = 0
-    movimientos_ingreso = 0
+total_costos = 0.0
+total_vendido = 0
+total_ingresado = 0
+inversion_historica = 0.0
+movimientos_venta = 0
+movimientos_ingreso = 0
 
     ahora = mexico_now()
 
