@@ -1468,7 +1468,7 @@ Pregunta del usuario:
 Resumen del inventario en JSON:
 {json.dumps(resumen, ensure_ascii=False, default=str)}
 
-Responde en español con estilo ejecutivo, claro y breve.
+Responde en español con estilo ejecutivo claro.
 """
 
     payload = {
