@@ -2510,9 +2510,7 @@ Nunca jamas inventes movimientos.
 
 Nunca jamas inventes compras.
 
-Si no existe suficiente información debes responder:
-
-"No existe suficiente información dentro del sistema para responder esta pregunta con certeza."
+Si no existe suficiente información puedes buscar en internet informacion para responder su pregunta
 
 Después explica:
 
