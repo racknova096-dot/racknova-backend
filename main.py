@@ -2773,7 +2773,7 @@ def analizar_inventario_con_ia(
             pregunta=pregunta_limpia,
             ruta_actual=data.ruta_actual,
             pagina_actual=data.pagina_actual,
-            historial=data.historial[-3:],
+            historial=data.historial,
             session=session,
             current_user=current_user,
             Producto=Producto,
