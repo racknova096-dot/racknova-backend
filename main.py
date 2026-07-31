@@ -21,6 +21,8 @@ import json
 import urllib.request
 import urllib.error
 
+from ia_copilot import procesar_consulta_ia
+
 try:
     from database import engine, get_session
     print("✅ Database module imported successfully")
@@ -234,6 +236,8 @@ class SalidaProducto(SQLModel):
 
 class IARequest(BaseModel):
     pregunta: str
+    ruta_actual: Optional[str] = None
+    pagina_actual: Optional[str] = None
 
 
 # ==========================================================
@@ -3091,153 +3095,45 @@ def listar_lotes(session: SessionDep, current_user: ReadUserDep):
 # ==========================================================
 # IA
 # ==========================================================
-
-
 @app.post("/ia/inventario")
 def analizar_inventario_con_ia(
     data: IARequest,
     session: SessionDep,
     current_user: OperatorUserDep,
 ):
-    pregunta_limpia = (
-        data.pregunta.strip()
-    )
+    pregunta_limpia = data.pregunta.strip()
 
     if not pregunta_limpia:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "La pregunta no puede "
-                "estar vacía."
-            ),
+            detail="La pregunta no puede estar vacía.",
         )
-
-    productos = session.exec(
-        select(Producto)
-    ).all()
-
-    movimientos = session.exec(
-        select(Movimiento)
-    ).all()
-
-    resumen = construir_resumen_inventario(
-        productos=productos,
-        movimientos=movimientos,
-        session=session,
-    )
 
     try:
-        resultado = llamar_deepseek(
+        return procesar_consulta_ia(
             pregunta=pregunta_limpia,
-            resumen=resumen,
-            user_id=(
-                f"racknova_"
-                f"{current_user.id_usuario or 'user'}"
-            ),
+            ruta_actual=data.ruta_actual,
+            pagina_actual=data.pagina_actual,
+            session=session,
+            current_user=current_user,
+            Producto=Producto,
+            Movimiento=Movimiento,
+            solicitar_deepseek=solicitar_deepseek,
         )
 
-        nivel_confiabilidad = (
-            resumen["calidad_datos"][
-                "nivel_confiabilidad"
-            ]
-        )
-
-        advertencia = None
-
-        if nivel_confiabilidad != "alta":
-            advertencia = (
-                "Existen productos o movimientos "
-                "con historial incompleto o datos "
-                "que requieren revisión. La IA "
-                "separó cifras confirmadas, "
-                "diagnósticos e hipótesis."
-            )
-
-        return {
-            "respuesta": (
-                resultado["respuesta"]
-            ),
-
-            "fuente": (
-                resultado["fuente"]
-            ),
-
-            "advertencia": advertencia,
-
-            "completa": (
-                resultado["completa"]
-            ),
-
-            "continuaciones": (
-                resultado["continuaciones"]
-            ),
-
-            "finish_reason": (
-                resultado["finish_reason"]
-            ),
-
-            "uso_tokens": (
-                resultado["uso_tokens"]
-            ),
-
-            "calidad_datos": (
-                resumen["calidad_datos"]
-            ),
-
-            "metricas_backend": (
-                resumen[
-                    "metricas_calculadas_backend"
-                ]
-            ),
-        }
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error
 
     except Exception as error:
-        print(
-            "❌ Error llamando DeepSeek:",
-            str(error),
-        )
+        print("❌ Error en RackNova IA v2:", str(error))
 
-        return {
-            "respuesta": (
-                generar_respuesta_fallback(
-                    pregunta_limpia,
-                    resumen,
-                )
-            ),
-
-            "fuente": (
-                "motor_interno_fallback"
-            ),
-
-            "advertencia": (
-                "DeepSeek no respondió. "
-                "Se utilizó el motor interno "
-                "de RackNova con los datos "
-                "calculados por el backend."
-            ),
-
-            "completa": True,
-
-            "continuaciones": 0,
-
-            "finish_reason": "fallback",
-
-            "uso_tokens": {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0,
-            },
-
-            "calidad_datos": (
-                resumen["calidad_datos"]
-            ),
-
-            "metricas_backend": (
-                resumen[
-                    "metricas_calculadas_backend"
-                ]
-            ),
-        }
+        raise HTTPException(
+            status_code=500,
+            detail="No se pudo procesar la consulta de RackNova IA.",
+        ) from error
 # ==========================================================
 # PRODUCTOS
 # ==========================================================
