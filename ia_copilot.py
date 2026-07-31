@@ -736,7 +736,7 @@ def preparar_historial(
         mensajes.append(
             {
                 "role": role,
-                "content": contenido[:1000],
+                "content": contenido,
             }
         )
 
@@ -758,8 +758,7 @@ def llamar_ia_compacta(
 
     model = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
     tipo = detectar_tipo_respuesta(pregunta)
-    max_tokens = {"directa": 220, "pasos": 420, "analisis": 750}[tipo]
-
+    max_tokens = 4096
     system_prompt = """
 Eres RackNova IA, el copiloto de la plataforma RackNova.
 
