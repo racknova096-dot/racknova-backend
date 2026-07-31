@@ -113,8 +113,8 @@ SessionDep = Annotated[Session, Depends(get_session)]
 # ==========================================================
 class IAMensajeHistorial(BaseModel):
     rol: Literal["usuario", "asistente"]
-    contenido: str = Field(min_length=1, max_length=1000)
-
+    contenido: str = PydanticField(min_length=1)
+    
 class Producto(SQLModel, table=True):
     id_producto: Optional[int] = Field(default=None, primary_key=True)
 
