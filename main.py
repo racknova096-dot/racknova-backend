@@ -7,7 +7,8 @@
 from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, Depends, Query, status
 from fastapi.security import OAuth2PasswordBearer
-from typing import Annotated, Optional, List, Dict, Any
+from typing import Annotated, Optional, List, Dict, Literal, Any
+from pydantic import BaseModel, Field
 from sqlmodel import SQLModel, Field, Session, select
 from zoneinfo import ZoneInfo
 from sqlalchemy import text
@@ -111,6 +112,9 @@ SessionDep = Annotated[Session, Depends(get_session)]
 # ==========================================================
 # MODELOS
 # ==========================================================
+class IAMensajeHistorial(BaseModel):
+    rol: Literal["usuario", "asistente"]
+    contenido: str = Field(min_length=1, max_length=1000)
 
 class Producto(SQLModel, table=True):
     id_producto: Optional[int] = Field(default=None, primary_key=True)
@@ -236,8 +240,12 @@ class SalidaProducto(SQLModel):
 
 class IARequest(BaseModel):
     pregunta: str
-    ruta_actual: Optional[str] = None
-    pagina_actual: Optional[str] = None
+    ruta_actual: str | None = None
+    pagina_actual: str | None = None
+    historial: list[IAMensajeHistorial] = Field(
+        default_factory=list,
+        max_length=3,
+    )
 
 
 # ==========================================================
@@ -2373,6 +2381,7 @@ ventas, movimientos, caducidades y ubicaciones.
 
 Reglas de respuesta:
 
+1. Recuerda dale al cliente siempre con amabilidad
 2. Si la respuesta puede darse en una o dos oraciones, no agregues explicaciones adicionales.
 3. No incluyas recomendaciones que el usuario no solicitó, salvo que exista
    un riesgo importante o un error de operación.
@@ -2386,7 +2395,11 @@ Reglas de respuesta:
    cuántos resultados adicionales existen.
 10. Mantén un tono directo, profesional, fácil de entender y amigable, que se sienta personalizado.
 11. No mas viñetas nunca
-
+12.Usa el historial únicamente para comprender referencias de la pregunta
+actual, como “ese producto”, “el segundo” o “explícalo mejor”.
+13.No repitas información anterior si no es necesaria.
+14.Si la pregunta actual puede responderse por sí sola, ignora el historial.
+Mantén la respuesta breve y directa.
 """.strip()
 
     user_prompt = f"""
@@ -2755,6 +2768,7 @@ def analizar_inventario_con_ia(
             pregunta=pregunta_limpia,
             ruta_actual=data.ruta_actual,
             pagina_actual=data.pagina_actual,
+            historial=data.historial[-3:],
             session=session,
             current_user=current_user,
             Producto=Producto,
