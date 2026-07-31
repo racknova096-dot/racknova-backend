@@ -708,7 +708,40 @@ def contexto_pagina(ruta_actual: Optional[str], rol: str) -> Dict[str, Any]:
         "rol": rol,
     }
 
+def preparar_historial(
+    historial: Optional[Sequence[Any]],
+) -> List[Dict[str, str]]:
+    mensajes: List[Dict[str, str]] = []
 
+    for item in list(historial or [])[-3:]:
+        if isinstance(item, dict):
+            rol = str(item.get("rol") or "").strip()
+            contenido = str(item.get("contenido") or "").strip()
+        else:
+            rol = str(getattr(item, "rol", "") or "").strip()
+            contenido = str(
+                getattr(item, "contenido", "") or ""
+            ).strip()
+
+        if not contenido:
+            continue
+
+        if rol == "usuario":
+            role = "user"
+        elif rol == "asistente":
+            role = "assistant"
+        else:
+            continue
+
+        mensajes.append(
+            {
+                "role": role,
+                "content": contenido[:1000],
+            }
+        )
+
+    return mensajes
+    
 def llamar_ia_compacta(
     *,
     pregunta: str,
@@ -716,6 +749,7 @@ def llamar_ia_compacta(
     rol: str,
     contexto: Dict[str, Any],
     user_id: str,
+    historial: Optional[Sequence[Any]],
     solicitar_deepseek: DeepSeekRequester,
 ) -> Dict[str, Any]:
     api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -731,7 +765,6 @@ Eres RackNova IA, el copiloto de la plataforma RackNova.
 
 Reglas obligatorias:
 1. Responde solamente lo necesario para contestar la pregunta actual.
-2. No tienes memoria: no supongas información de mensajes anteriores.
 3. Si la respuesta es directa, usa como máximo dos oraciones.
 4. Si preguntan cómo realizar algo, indica entre 3 y 6 pasos concretos.
 5. Solo haz un análisis amplio cuando el usuario lo pida explícitamente.
@@ -739,7 +772,7 @@ Reglas obligatorias:
 7. No inventes productos, cifras, páginas, botones ni funciones.
 8. Usa únicamente los datos incluidos en CONTEXTO RACKNOVA para mencionar cifras.
 9. Si faltan datos, dilo claramente en una sola frase.
-10. Escribe en español claro, profesional y directo.
+10. Escribe en español claro, profesional y directo y muy amable.
 """.strip()
 
     user_prompt = f"""
@@ -749,16 +782,29 @@ PREGUNTA ACTUAL: {pregunta}
 CONTEXTO RACKNOVA: {json.dumps(contexto, ensure_ascii=False, default=str, separators=(',', ':'))}
 """.strip()
 
-    resultado = solicitar_deepseek(
-        api_key=api_key,
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        max_tokens=max_tokens,
-        user_id=user_id,
-    )
+   messages: List[Dict[str, str]] = [
+    {
+        "role": "system",
+        "content": system_prompt,
+    }
+]
+
+messages.extend(preparar_historial(historial))
+
+messages.append(
+    {
+        "role": "user",
+        "content": user_prompt,
+    }
+)
+
+resultado = solicitar_deepseek(
+    api_key=api_key,
+    model=model,
+    messages=messages,
+    max_tokens=max_tokens,
+    user_id=user_id,
+)
 
     contenido = str(resultado.get("content") or "").strip()
     if not contenido:
@@ -807,6 +853,7 @@ def procesar_consulta_ia(
     pregunta: str,
     ruta_actual: Optional[str],
     pagina_actual: Optional[str],
+    historial: Optional[Sequence[Any]],
     session: Session,
     current_user: Any,
     Producto: Any,
@@ -843,6 +890,7 @@ def procesar_consulta_ia(
             rol=rol,
             contexto=contexto,
             user_id=user_id,
+            historial=historial,
             solicitar_deepseek=solicitar_deepseek,
         )
     except Exception as error:
