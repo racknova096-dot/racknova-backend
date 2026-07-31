@@ -782,29 +782,29 @@ PREGUNTA ACTUAL: {pregunta}
 CONTEXTO RACKNOVA: {json.dumps(contexto, ensure_ascii=False, default=str, separators=(',', ':'))}
 """.strip()
 
-   messages: List[Dict[str, str]] = [
-    {
-        "role": "system",
-        "content": system_prompt,
-    }
-]
+    messages: List[Dict[str, str]] = [
+        {
+            "role": "system",
+            "content": system_prompt,
+        }
+    ]
 
-messages.extend(preparar_historial(historial))
+    messages.extend(preparar_historial(historial))
 
-messages.append(
-    {
-        "role": "user",
-        "content": user_prompt,
-    }
-)
+    messages.append(
+        {
+            "role": "user",
+            "content": user_prompt,
+        }
+    )
 
-resultado = solicitar_deepseek(
-    api_key=api_key,
-    model=model,
-    messages=messages,
-    max_tokens=max_tokens,
-    user_id=user_id,
-)
+    resultado = solicitar_deepseek(
+        api_key=api_key,
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+        user_id=user_id,
+    )
 
     contenido = str(resultado.get("content") or "").strip()
     if not contenido:
