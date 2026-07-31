@@ -7,8 +7,8 @@
 from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, Depends, Query, status
 from fastapi.security import OAuth2PasswordBearer
-from typing import Annotated, Optional, List, Dict, Literal, Any
-from pydantic import BaseModel, Field
+from typing import Annotated, Optional, List, Dict, Any, Literal
+from pydantic import BaseModel, Field as PydanticField
 from sqlmodel import SQLModel, Field, Session, select
 from zoneinfo import ZoneInfo
 from sqlalchemy import text
@@ -238,11 +238,16 @@ class SalidaProducto(SQLModel):
     ganancia: float = 0
 
 
+class IAMensajeHistorial(BaseModel):
+    rol: Literal["usuario", "asistente"]
+    contenido: str
+
+
 class IARequest(BaseModel):
     pregunta: str
-    ruta_actual: str | None = None
-    pagina_actual: str | None = None
-    historial: list[IAMensajeHistorial] = Field(
+    ruta_actual: Optional[str] = None
+    pagina_actual: Optional[str] = None
+    historial: List[IAMensajeHistorial] = PydanticField(
         default_factory=list,
         max_length=3,
     )
