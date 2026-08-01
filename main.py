@@ -21,6 +21,8 @@ import os
 import json
 import urllib.request
 import urllib.error
+
+from pos_module import registrar_modulo_pos
 from ia_copilot import procesar_consulta_ia
 
 try:
@@ -121,6 +123,7 @@ class Producto(SQLModel, table=True):
     sku: str
     nombre: str
     descripcion: Optional[str] = None
+    codigo_barras: Optional[str] = Field(default=None, index=True)
     cantidad: int = 0
 
     rack: str
@@ -422,6 +425,13 @@ def ejecutar_migraciones_ligeras():
             "producto",
             "descripcion",
             "TEXT NULL",
+        )
+
+        agregar_columna_si_falta(
+            session,
+            "producto",
+            "codigo_barras",
+            "VARCHAR(128) NULL",
         )
 
         agregar_columna_si_falta(
@@ -800,6 +810,20 @@ def descontar_lotes_fefo(
 
     return detalle
 
+
+# ==========================================================
+# PUNTO DE VENTA — MÓDULO OPCIONAL
+# ==========================================================
+registrar_modulo_pos(
+    app=app,
+    get_session=get_session,
+    require_roles=require_roles,
+    Producto=Producto,
+    Movimiento=Movimiento,
+    mexico_now=mexico_now,
+    descontar_lotes_fefo=descontar_lotes_fefo,
+    obtener_caducidad_mas_proxima=obtener_caducidad_mas_proxima,
+)
 
 # ==========================================================
 # UTILIDADES IA — RACKNOVA
@@ -2807,6 +2831,7 @@ def crear_producto(
         producto.sku = normalizar_texto(producto.sku)
         producto.nombre = normalizar_texto(producto.nombre)
         producto.descripcion = normalizar_texto(producto.descripcion) or None
+        producto.codigo_barras = normalizar_texto(producto.codigo_barras) or None
 
         producto.rack = normalizar_texto(producto.rack)
         producto.nivel = normalizar_texto(producto.nivel)
@@ -2882,6 +2907,9 @@ def crear_producto(
             producto_existente.sku = catalogo.sku
             producto_existente.nombre = catalogo.nombre
             producto_existente.descripcion = catalogo.descripcion
+            producto_existente.codigo_barras = (
+                producto.codigo_barras or producto_existente.codigo_barras
+            )
             producto_existente.ultima_actualizacion = mexico_now()
 
             crear_lote(
@@ -2999,6 +3027,10 @@ def update_producto(
         db_producto.cantidad = updated.cantidad
         db_producto.costo_proveedor = updated.costo_proveedor or 0
         db_producto.precio_venta_sugerido = updated.precio_venta_sugerido or 0
+        db_producto.codigo_barras = (
+            normalizar_texto(updated.codigo_barras)
+            or db_producto.codigo_barras
+        )
 
         db_producto.stock_minimo = normalizar_stock_minimo(updated.stock_minimo)
         db_producto.stock_alto = normalizar_stock_alto(
@@ -3504,6 +3536,9 @@ def limpiar_toda_la_base(
                 text(
                     """
                     TRUNCATE TABLE
+                        venta_pos_pago,
+                        venta_pos_detalle,
+                        venta_pos,
                         producto_lote,
                         movimiento,
                         producto
@@ -3512,6 +3547,9 @@ def limpiar_toda_la_base(
                 )
             )
         else:
+            session.exec(text("DELETE FROM venta_pos_pago;"))
+            session.exec(text("DELETE FROM venta_pos_detalle;"))
+            session.exec(text("DELETE FROM venta_pos;"))
             session.exec(text("DELETE FROM producto_lote;"))
             session.exec(text("DELETE FROM movimiento;"))
             session.exec(text("DELETE FROM producto;"))
