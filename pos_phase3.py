@@ -900,7 +900,11 @@ def _day_bounds(report_date: date) -> Tuple[datetime, datetime]:
     return datetime.combine(report_date, time.min), datetime.combine(report_date, time.max)
 
 
-def _daily_report(session: Session, report_date: date) -> Dict[str, Any]:
+def _daily_report(
+    session: Session,
+    report_date: date,
+    Movimiento: Any = None,
+) -> Dict[str, Any]:
     start, end = _day_bounds(report_date)
     sales = session.exec(
         select(VentaPOS).where((VentaPOS.fecha >= start) & (VentaPOS.fecha <= end))
@@ -931,6 +935,7 @@ def _daily_report(session: Session, report_date: date) -> Dict[str, Any]:
     # El costo retornado se aproxima desde detalle de devolución.
     returned_cost = 0.0
     product_map: Dict[str, Dict[str, Any]] = {}
+    movement_details: List[Dict[str, Any]] = []
     cashier_map = defaultdict(lambda: {"ventas": 0, "total": 0.0})
     box_map = defaultdict(lambda: {"ventas": 0, "total": 0.0})
     hourly = defaultdict(float)
@@ -965,6 +970,19 @@ def _daily_report(session: Session, report_date: date) -> Dict[str, Any]:
             returned_qty = returned_inventory / factor
             net_qty = max(sold_qty - returned_qty, 0)
             ratio = returned_qty / sold_qty if sold_qty else 0
+
+            movement_location = "Sin ubicación registrada"
+            if Movimiento is not None and detail.id_detalle is not None:
+                movement_link = session.exec(
+                    select(POSVentaMovimiento).where(
+                        POSVentaMovimiento.id_detalle == detail.id_detalle
+                    )
+                ).first()
+                if movement_link:
+                    movement_row = session.get(Movimiento, movement_link.id_movimiento)
+                    if movement_row and getattr(movement_row, "ubicacion", None):
+                        movement_location = str(movement_row.ubicacion)
+
             returned_cost += float(detail.costo_total or 0) * ratio
             row = product_map.setdefault(
                 detail.sku,
@@ -980,6 +998,26 @@ def _daily_report(session: Session, report_date: date) -> Dict[str, Any]:
             row["cantidad"] += net_qty
             row["ingresos"] += float(detail.subtotal or 0) * (1 - ratio)
             row["ganancia"] += float(detail.ganancia or 0) * (1 - ratio)
+
+            movement_details.append(
+                {
+                    "id_venta": int(sale.id_venta or 0),
+                    "id_detalle": int(detail.id_detalle or 0),
+                    "folio": sale.folio,
+                    "fecha": sale.fecha,
+                    "usuario": sale.usuario,
+                    "caja": box_name,
+                    "sku": detail.sku,
+                    "nombre": detail.nombre,
+                    "ubicacion": movement_location,
+                    "unidad_venta": extra.unidad_venta if extra else "pieza",
+                    "cantidad_vendida": _qty(sold_qty),
+                    "cantidad_devuelta": _qty(returned_qty),
+                    "cantidad_neta": _qty(net_qty),
+                    "ingresos": _money(float(detail.subtotal or 0) * (1 - ratio)),
+                    "ganancia": _money(float(detail.ganancia or 0) * (1 - ratio)),
+                }
+            )
 
     for installment in installments:
         payment_map[f"abono_{installment.metodo.lower()}"] += float(installment.monto or 0)
@@ -1021,6 +1059,14 @@ def _daily_report(session: Session, report_date: date) -> Dict[str, Any]:
         },
         "metodos_pago": {key: _money(value) for key, value in payment_map.items()},
         "productos": top_products,
+        "movimientos_productos": sorted(
+            movement_details,
+            key=lambda item: (
+                str(item["fecha"]),
+                item["ubicacion"],
+                item["sku"],
+            ),
+        ),
         "cajeros": [
             {"usuario": key, "ventas": value["ventas"], "total": _money(value["total"])}
             for key, value in sorted(cashier_map.items())
@@ -1075,6 +1121,63 @@ def _xlsx_report(data: Dict[str, Any]) -> bytes:
                 item["ganancia"],
             ]
         )
+
+    movements = workbook.create_sheet("Salidas y ubicaciones")
+    movement_headers = [
+        "Fecha",
+        "Folio",
+        "Caja",
+        "Cajero",
+        "SKU",
+        "Producto",
+        "Ubicación",
+        "Unidad",
+        "Cantidad vendida",
+        "Cantidad devuelta",
+        "Cantidad neta",
+        "Ingresos netos",
+        "Ganancia",
+    ]
+    movements.append(movement_headers)
+    for cell in movements[1]:
+        cell.font = Font(bold=True)
+    for item in data.get("movimientos_productos", []):
+        movements.append(
+            [
+                str(item["fecha"]),
+                item["folio"],
+                item["caja"],
+                item["usuario"],
+                item["sku"],
+                item["nombre"],
+                item["ubicacion"],
+                item["unidad_venta"],
+                item["cantidad_vendida"],
+                item["cantidad_devuelta"],
+                item["cantidad_neta"],
+                item["ingresos"],
+                item["ganancia"],
+            ]
+        )
+    movements.freeze_panes = "A2"
+    movements.auto_filter.ref = movements.dimensions
+    movement_widths = {
+        "A": 20,
+        "B": 18,
+        "C": 18,
+        "D": 22,
+        "E": 16,
+        "F": 32,
+        "G": 20,
+        "H": 14,
+        "I": 18,
+        "J": 18,
+        "K": 16,
+        "L": 16,
+        "M": 16,
+    }
+    for column, width in movement_widths.items():
+        movements.column_dimensions[column].width = width
 
     cuts = workbook.create_sheet("Cortes de caja")
     cuts.append(
@@ -1154,6 +1257,31 @@ def _pdf_report(data: Dict[str, Any]) -> bytes:
         if y < 70:
             pdf.showPage()
             y = height - 50
+    if y < 110:
+        pdf.showPage()
+        y = height - 50
+
+    y -= 12
+    pdf.setFont("Helvetica-Bold", 12)
+    pdf.drawString(45, y, "Conciliacion fisica de salidas")
+    y -= 18
+    pdf.setFont("Helvetica", 7.5)
+
+    for item in data.get("movimientos_productos", []):
+        fecha_value = str(item.get("fecha", ""))
+        hora = fecha_value[11:16] if len(fecha_value) >= 16 else fecha_value
+        text = (
+            f"{hora} | {item['folio']} | {item['ubicacion']} | "
+            f"{item['sku']} - {item['nombre']} | "
+            f"Neto: {item['cantidad_neta']} {item['unidad_venta']}"
+        )
+        pdf.drawString(45, y, text[:135])
+        y -= 12
+        if y < 55:
+            pdf.showPage()
+            y = height - 45
+            pdf.setFont("Helvetica", 7.5)
+
     pdf.save()
     return output.getvalue()
 
@@ -2338,7 +2466,7 @@ def registrar_modulo_pos_fase3(
         current_user: Any = Depends(read_user),
     ):
         report_date = fecha or mexico_now().date()
-        return _daily_report(session, report_date)
+        return _daily_report(session, report_date, Movimiento)
 
     @app.post("/pos/v3/reportes/diario/cerrar")
     def close_daily_report(
@@ -2347,7 +2475,7 @@ def registrar_modulo_pos_fase3(
         current_user: Any = Depends(admin_user),
     ):
         report_date = fecha or mexico_now().date()
-        data = _daily_report(session, report_date)
+        data = _daily_report(session, report_date, Movimiento)
         row = session.exec(
             select(POSReporteDiario).where(POSReporteDiario.fecha_reporte == report_date)
         ).first()
@@ -2385,7 +2513,7 @@ def registrar_modulo_pos_fase3(
         current_user: Any = Depends(read_user),
     ):
         report_date = fecha or mexico_now().date()
-        content = _xlsx_report(_daily_report(session, report_date))
+        content = _xlsx_report(_daily_report(session, report_date, Movimiento))
         return Response(
             content=content,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -2399,7 +2527,7 @@ def registrar_modulo_pos_fase3(
         current_user: Any = Depends(read_user),
     ):
         report_date = fecha or mexico_now().date()
-        content = _pdf_report(_daily_report(session, report_date))
+        content = _pdf_report(_daily_report(session, report_date, Movimiento))
         return Response(
             content=content,
             media_type="application/pdf",
