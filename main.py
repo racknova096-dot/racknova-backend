@@ -23,6 +23,7 @@ import urllib.request
 import urllib.error
 
 from pos_module import registrar_modulo_pos
+from pos_phase3 import registrar_modulo_pos_fase3
 from ia_copilot import procesar_consulta_ia
 
 try:
@@ -815,6 +816,22 @@ def descontar_lotes_fefo(
 # PUNTO DE VENTA — MÓDULO OPCIONAL
 # ==========================================================
 registrar_modulo_pos(
+    app=app,
+    get_session=get_session,
+    require_roles=require_roles,
+    Producto=Producto,
+    ProductoLote=ProductoLote,
+    Movimiento=Movimiento,
+    mexico_now=mexico_now,
+    descontar_lotes_fefo=descontar_lotes_fefo,
+    obtener_caducidad_mas_proxima=obtener_caducidad_mas_proxima,
+)
+
+
+# ==========================================================
+# PUNTO DE VENTA — FASE 3 COMERCIAL
+# ==========================================================
+registrar_modulo_pos_fase3(
     app=app,
     get_session=get_session,
     require_roles=require_roles,
@@ -3537,6 +3554,17 @@ def limpiar_toda_la_base(
                 text(
                     """
                     TRUNCATE TABLE
+                        pos_auditoria,
+                        pos_reporte_diario,
+                        pos_devolucion_extra,
+                        pos_abono,
+                        pos_credito,
+                        pos_venta_detalle_extra,
+                        pos_venta_extra,
+                        pos_promocion,
+                        pos_precio_cliente,
+                        pos_producto_configuracion,
+                        pos_cliente,
                         pos_devolucion_detalle,
                         pos_devolucion,
                         pos_venta_movimiento,
@@ -3555,6 +3583,17 @@ def limpiar_toda_la_base(
                 )
             )
         else:
+            session.exec(text("DELETE FROM pos_auditoria;"))
+            session.exec(text("DELETE FROM pos_reporte_diario;"))
+            session.exec(text("DELETE FROM pos_devolucion_extra;"))
+            session.exec(text("DELETE FROM pos_abono;"))
+            session.exec(text("DELETE FROM pos_credito;"))
+            session.exec(text("DELETE FROM pos_venta_detalle_extra;"))
+            session.exec(text("DELETE FROM pos_venta_extra;"))
+            session.exec(text("DELETE FROM pos_promocion;"))
+            session.exec(text("DELETE FROM pos_precio_cliente;"))
+            session.exec(text("DELETE FROM pos_producto_configuracion;"))
+            session.exec(text("DELETE FROM pos_cliente;"))
             session.exec(text("DELETE FROM pos_devolucion_detalle;"))
             session.exec(text("DELETE FROM pos_devolucion;"))
             session.exec(text("DELETE FROM pos_venta_movimiento;"))
