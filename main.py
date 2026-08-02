@@ -819,6 +819,7 @@ registrar_modulo_pos(
     get_session=get_session,
     require_roles=require_roles,
     Producto=Producto,
+    ProductoLote=ProductoLote,
     Movimiento=Movimiento,
     mexico_now=mexico_now,
     descontar_lotes_fefo=descontar_lotes_fefo,
@@ -3536,6 +3537,13 @@ def limpiar_toda_la_base(
                 text(
                     """
                     TRUNCATE TABLE
+                        pos_devolucion_detalle,
+                        pos_devolucion,
+                        pos_venta_movimiento,
+                        pos_venta_lote,
+                        pos_venta_control,
+                        pos_movimiento_efectivo,
+                        pos_sesion_caja,
                         venta_pos_pago,
                         venta_pos_detalle,
                         venta_pos,
@@ -3547,6 +3555,13 @@ def limpiar_toda_la_base(
                 )
             )
         else:
+            session.exec(text("DELETE FROM pos_devolucion_detalle;"))
+            session.exec(text("DELETE FROM pos_devolucion;"))
+            session.exec(text("DELETE FROM pos_venta_movimiento;"))
+            session.exec(text("DELETE FROM pos_venta_lote;"))
+            session.exec(text("DELETE FROM pos_venta_control;"))
+            session.exec(text("DELETE FROM pos_movimiento_efectivo;"))
+            session.exec(text("DELETE FROM pos_sesion_caja;"))
             session.exec(text("DELETE FROM venta_pos_pago;"))
             session.exec(text("DELETE FROM venta_pos_detalle;"))
             session.exec(text("DELETE FROM venta_pos;"))
