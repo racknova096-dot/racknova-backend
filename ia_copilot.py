@@ -99,6 +99,42 @@ PAGINAS: Dict[str, Dict[str, Any]] = {
         "roles": {"admin", "operator"},
         "palabras": {"racknova ia", "inteligencia artificial", "asistente"},
     },
+    "/pos": {
+        "nombre": "Punto de Venta",
+        "descripcion": (
+            "Permite abrir caja, buscar productos, cobrar ventas, aplicar "
+            "promociones, administrar clientes y crédito, consultar tickets "
+            "y cerrar el turno."
+        ),
+        "instruccion": (
+            "En Punto de Venta abre una caja, busca el producto por código, "
+            "SKU o nombre, agrégalo al carrito, revisa cantidad, promoción y "
+            "descuento, selecciona el método de pago y confirma la venta. "
+            "Al terminar se muestra el resumen del ticket."
+        ),
+        "roles": {"admin", "operator"},
+        "palabras": {
+            "punto de venta",
+            "pos",
+            "caja",
+            "abrir caja",
+            "cerrar caja",
+            "carrito",
+            "cobrar",
+            "cobro",
+            "ticket",
+            "promocion",
+            "promociones",
+            "cliente",
+            "clientes",
+            "credito",
+            "fiado",
+            "pago mixto",
+            "efectivo recibido",
+            "cambio",
+        },
+    },
+
     "/usuarios": {
         "nombre": "Usuarios",
         "descripcion": "Administra cuentas, roles y acceso al sistema.",
@@ -244,6 +280,30 @@ def detectar_tipo_respuesta(pregunta: str) -> str:
 
 def es_pregunta_ayuda(pregunta: str) -> bool:
     texto = normalizar(pregunta)
+    # RACKNOVA_IA_DETECTAR_AYUDA_POS
+    if contiene(
+        texto,
+        (
+            "como funciona el punto de venta",
+            "cómo funciona el punto de venta",
+            "como uso el pos",
+            "cómo uso el pos",
+            "como cobro",
+            "cómo cobro",
+            "abrir caja",
+            "cerrar caja",
+            "fondo inicial",
+            "pago mixto",
+            "como aplico una promocion",
+            "cómo aplico una promoción",
+            "como hago una venta",
+            "cómo hago una venta",
+            "como imprimo el ticket",
+            "cómo imprimo el ticket",
+        ),
+    ):
+        return True
+
     frases_ayuda = (
         "como agreg",
         "donde agreg",
@@ -274,6 +334,43 @@ def es_pregunta_ayuda(pregunta: str) -> bool:
 def buscar_pagina_mencionada(pregunta: str, ruta_actual: Optional[str]) -> str:
     texto = normalizar(pregunta)
 
+    # RACKNOVA_IA_RUTA_POS
+    if contiene(
+        texto,
+        (
+            "punto de venta",
+            "pos",
+            "abrir caja",
+            "cerrar caja",
+            "fondo inicial",
+            "carrito",
+            "cobrar",
+            "cobro",
+            "ticket",
+            "promocion",
+            "promoción",
+            "pago mixto",
+            "cliente a credito",
+            "cliente a crédito",
+            "fiado",
+        ),
+    ):
+        return "/pos"
+
+    if ruta_actual == "/pos" and contiene(
+        texto,
+        (
+            "venta",
+            "vender",
+            "producto",
+            "descuento",
+            "pago",
+            "cantidad",
+            "cliente",
+        ),
+    ):
+        return "/pos"
+
     # Casos operativos frecuentes antes de la búsqueda general.
     if contiene(texto, ("agregar", "agrego", "entrada", "reabastecer", "restock")):
         return "/add"
@@ -289,6 +386,135 @@ def buscar_pagina_mencionada(pregunta: str, ruta_actual: Optional[str]) -> str:
     return "/"
 
 
+
+# RACKNOVA_IA_GUIA_POS
+def responder_ayuda_pos(
+    pregunta: str,
+    *,
+    ya_esta_en_pagina: bool,
+) -> Dict[str, Any]:
+    texto = normalizar(pregunta)
+    prefijo = "Ya estás en Punto de Venta. " if ya_esta_en_pagina else ""
+    accion = None if ya_esta_en_pagina else accion_navegar("/pos")
+
+    if contiene(texto, ("abrir caja", "fondo inicial", "iniciar turno")):
+        respuesta = (
+            prefijo
+            + "Para iniciar: 1) selecciona una caja; 2) captura el fondo "
+            "inicial disponible; 3) pulsa Abrir caja. El fondo inicial es "
+            "el efectivo con el que comienza el cajero para entregar cambio."
+        )
+    elif contiene(texto, ("cerrar caja", "cerrar turno", "corte de caja")):
+        respuesta = (
+            prefijo
+            + "Para cerrar el turno: 1) revisa el efectivo esperado; "
+            "2) cuenta el efectivo físico; 3) captura el efectivo contado y "
+            "observaciones; 4) pulsa Cerrar turno. RackNova calculará la diferencia."
+        )
+    elif contiene(
+        texto,
+        (
+            "promocion",
+            "promociones",
+            "descuento automatico",
+            "descuento automático",
+            "3x2",
+            "precio fijo",
+        ),
+    ):
+        respuesta = (
+            prefijo
+            + "Las promociones se crean en Punto de Venta > Promociones. "
+            "Selecciona el producto o todos los productos, define porcentaje, "
+            "precio fijo o N por M, cantidad mínima y vigencia. En el carrito "
+            "RackNova cotiza automáticamente y muestra el nombre y monto aplicado."
+        )
+    elif contiene(
+        texto,
+        (
+            "descuento manual",
+            "descuento del cajero",
+            "descuento %",
+        ),
+    ):
+        respuesta = (
+            prefijo
+            + "El descuento manual se captura en el producto dentro del carrito. "
+            "Es independiente de la promoción automática y el total se vuelve a "
+            "cotizar antes de cobrar."
+        )
+    elif contiene(
+        texto,
+        (
+            "cliente",
+            "clientes",
+            "credito",
+            "crédito",
+            "fiado",
+            "abono",
+            "saldo",
+        ),
+    ):
+        respuesta = (
+            prefijo
+            + "En Clientes y crédito puedes registrar al cliente, definir límite "
+            "y días de crédito, consultar saldo y registrar abonos. Para una venta "
+            "a crédito selecciona al cliente y cambia la modalidad a Crédito o Pago parcial."
+        )
+    elif contiene(
+        texto,
+        (
+            "pago mixto",
+            "efectivo",
+            "tarjeta",
+            "transferencia",
+            "cambio",
+            "forma de pago",
+            "metodo de pago",
+            "método de pago",
+        ),
+    ):
+        respuesta = (
+            prefijo
+            + "En Cobro selecciona efectivo, tarjeta, transferencia o pago mixto. "
+            "En efectivo captura lo recibido para calcular el cambio. En pago mixto "
+            "los importes deben sumar exactamente el total cotizado."
+        )
+    elif contiene(
+        texto,
+        (
+            "ticket",
+            "imprimir",
+            "folio",
+            "historial de ventas",
+            "ver venta",
+            "cancelar venta",
+            "devolucion",
+            "devolución",
+        ),
+    ):
+        respuesta = (
+            prefijo
+            + "Al completar la venta se abre el resumen del ticket con folio, "
+            "productos, promociones, pagos, total y cambio. Desde ahí puedes imprimir. "
+            "Las ventas anteriores se consultan en Historial; administradores pueden "
+            "cancelar o registrar devoluciones."
+        )
+    else:
+        respuesta = (
+            prefijo
+            + "Para vender: 1) abre una caja; 2) busca por código, SKU o nombre; "
+            "3) agrega el producto y captura la cantidad; 4) revisa promociones y "
+            "descuentos; 5) selecciona el pago; 6) cobra y revisa el ticket."
+        )
+
+    return respuesta_base(
+        respuesta,
+        tipo="pasos",
+        accion=accion,
+    )
+
+
 def responder_ayuda(
     pregunta: str,
     ruta_actual: Optional[str],
@@ -301,6 +527,12 @@ def responder_ayuda(
         return respuesta_base(
             f"La página {pagina['nombre']} no está disponible para tu rol actual.",
             tipo="directa",
+        )
+
+    if ruta == "/pos":
+        return responder_ayuda_pos(
+            pregunta,
+            ya_esta_en_pagina=ruta_actual == ruta,
         )
 
     texto = normalizar(pregunta)

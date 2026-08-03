@@ -3495,6 +3495,49 @@ def actualizar_usuario(
     }
 
 
+
+# RACKNOVA_USUARIO_ELIMINACION_PERMANENTE
+@app.delete("/auth/users/{id_usuario}/permanente")
+def eliminar_usuario_permanentemente(
+    id_usuario: int,
+    session: SessionDep,
+    current_user: AdminUserDep,
+):
+    usuario = session.get(Usuario, id_usuario)
+
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if current_user.id_usuario == usuario.id_usuario:
+        raise HTTPException(
+            status_code=400,
+            detail="No puedes eliminar la cuenta con la que tienes iniciada la sesión.",
+        )
+
+    if usuario.rol == "admin" and usuario.activo:
+        if contar_admins_activos(session) <= 1:
+            raise HTTPException(
+                status_code=400,
+                detail="No puedes eliminar al último administrador activo.",
+            )
+
+    nombre_historial = usuario.nombre or usuario.usuario
+    correo_eliminado = usuario.usuario
+
+    # Las ventas y movimientos guardan el responsable como texto.
+    # Por eso el historial conserva el nombre aunque la cuenta desaparezca.
+    session.delete(usuario)
+    session.commit()
+
+    return {
+        "mensaje": "Usuario eliminado permanentemente",
+        "id_usuario": id_usuario,
+        "usuario": correo_eliminado,
+        "nombre_historial": nombre_historial,
+        "historial_conservado": True,
+    }
+
+
 @app.delete("/auth/users/{id_usuario}")
 def desactivar_usuario(
     id_usuario: int,
