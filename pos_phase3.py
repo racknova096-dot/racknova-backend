@@ -450,14 +450,25 @@ def _audit(
     )
 
 
+# RACKNOVA_POS_QUERY_OPTIMIZATIONS
 def _open_session(session: Session, current_user: Any) -> Optional[POSSesionCaja]:
-    keys = {_key(current_user), _name(current_user)}
-    rows = session.exec(
+    keys = {
+        value
+        for value in (_key(current_user), _name(current_user))
+        if value
+    }
+
+    if not keys:
+        return None
+
+    return session.exec(
         select(POSSesionCaja)
-        .where(POSSesionCaja.estado == "ABIERTA")
+        .where(
+            (POSSesionCaja.estado == "ABIERTA")
+            & (POSSesionCaja.usuario.in_(keys))
+        )
         .order_by(POSSesionCaja.fecha_apertura.desc())
-    ).all()
-    return next((row for row in rows if row.usuario in keys), None)
+    ).first()
 
 
 def _require_open_session(session: Session, current_user: Any) -> POSSesionCaja:
@@ -511,18 +522,31 @@ def _active_promotions(
     sku: str,
     now: datetime,
 ) -> List[POSPromocion]:
-    rows = session.exec(
-        select(POSPromocion)
-        .where(POSPromocion.activa == True)  # noqa: E712
-        .order_by(POSPromocion.prioridad.desc(), POSPromocion.id_promocion.asc())
-    ).all()
-    return [
-        row
-        for row in rows
-        if (not row.sku or row.sku == sku)
-        and (row.fecha_inicio is None or row.fecha_inicio <= now)
-        and (row.fecha_fin is None or row.fecha_fin >= now)
-    ]
+    cache_key = "_racknova_promociones_vigentes"
+    rows = session.info.get(cache_key)
+
+    if rows is None:
+        rows = session.exec(
+            select(POSPromocion)
+            .where(
+                (POSPromocion.activa == True)  # noqa: E712
+                & (
+                    (POSPromocion.fecha_inicio == None)  # noqa: E711
+                    | (POSPromocion.fecha_inicio <= now)
+                )
+                & (
+                    (POSPromocion.fecha_fin == None)  # noqa: E711
+                    | (POSPromocion.fecha_fin >= now)
+                )
+            )
+            .order_by(
+                POSPromocion.prioridad.desc(),
+                POSPromocion.id_promocion.asc(),
+            )
+        ).all()
+        session.info[cache_key] = rows
+
+    return [row for row in rows if not row.sku or row.sku == sku]
 
 
 def _customer_price(
@@ -682,6 +706,65 @@ def _credit_by_sale(session: Session, sale_id: int) -> Optional[POSCredito]:
     return session.exec(
         select(POSCredito).where(POSCredito.id_venta == sale_id)
     ).first()
+
+
+def _serialize_clients_bulk(
+    rows: List[POSCliente],
+    session: Session,
+) -> List[Dict[str, Any]]:
+    client_ids = [
+        int(row.id_cliente)
+        for row in rows
+        if row.id_cliente is not None
+    ]
+
+    balances: Dict[int, float] = defaultdict(float)
+    overdue: Dict[int, float] = defaultdict(float)
+
+    if client_ids:
+        credits = session.exec(
+            select(POSCredito).where(
+                (POSCredito.id_cliente.in_(client_ids))
+                & (POSCredito.estado != "CANCELADO")
+                & (POSCredito.estado != "PAGADO")
+            )
+        ).all()
+
+        today = date.today()
+        for credit in credits:
+            balances[credit.id_cliente] += float(credit.saldo or 0)
+            if credit.fecha_vencimiento < today:
+                overdue[credit.id_cliente] += float(credit.saldo or 0)
+
+    result: List[Dict[str, Any]] = []
+    for row in rows:
+        client_id = int(row.id_cliente or 0)
+        balance = _money(balances.get(client_id, 0))
+        expired = _money(overdue.get(client_id, 0))
+
+        result.append(
+            {
+                "id_cliente": row.id_cliente,
+                "nombre": row.nombre,
+                "telefono": row.telefono,
+                "email": row.email,
+                "rfc": row.rfc,
+                "direccion": row.direccion,
+                "limite_credito": _money(row.limite_credito),
+                "dias_credito": row.dias_credito,
+                "notas": row.notas,
+                "activo": row.activo,
+                "saldo": balance,
+                "vencido": expired,
+                "credito_disponible": _money(
+                    max(row.limite_credito - balance, 0)
+                ),
+                "fecha_creacion": row.fecha_creacion,
+                "fecha_actualizacion": row.fecha_actualizacion,
+            }
+        )
+
+    return result
 
 
 def _serialize_client(row: POSCliente, session: Optional[Session] = None) -> Dict[str, Any]:
@@ -1433,7 +1516,7 @@ def registrar_modulo_pos_fase3(
                 )
             )
         rows = session.exec(statement).all()
-        return [_serialize_client(row, session) for row in rows]
+        return _serialize_clients_bulk(rows, session)
 
     @app.post("/pos/v3/clientes")
     def create_client(
@@ -1840,11 +1923,37 @@ def registrar_modulo_pos_fase3(
                 )
                 .limit(limite)
             ).all()
+        skus = [product.sku for product in products]
+        configs_by_sku: Dict[str, POSProductoConfiguracion] = {}
+        specials_by_sku: Dict[str, POSPrecioCliente] = {}
+
+        if skus:
+            configs = session.exec(
+                select(POSProductoConfiguracion).where(
+                    POSProductoConfiguracion.sku.in_(skus)
+                )
+            ).all()
+            configs_by_sku = {row.sku: row for row in configs}
+
+            if id_cliente is not None:
+                special_rows = session.exec(
+                    select(POSPrecioCliente).where(
+                        (POSPrecioCliente.id_cliente == id_cliente)
+                        & (POSPrecioCliente.sku.in_(skus))
+                        & (POSPrecioCliente.activo == True)  # noqa: E712
+                    )
+                ).all()
+                specials_by_sku = {row.sku: row for row in special_rows}
+
         result = []
         for product in products:
-            config = _product_config(session, product.sku)
-            factor = float(config.factor_inventario if config and config.activo else 1) or 1
-            special = _customer_price(session, id_cliente, product.sku)
+            config = configs_by_sku.get(product.sku)
+            factor = float(
+                config.factor_inventario
+                if config and config.activo
+                else 1
+            ) or 1
+            special = specials_by_sku.get(product.sku)
             price = (
                 special.precio
                 if special
@@ -2265,8 +2374,77 @@ def registrar_modulo_pos_fase3(
         session: Session = Depends(get_session),
         current_user: Any = Depends(read_user),
     ):
-        rows = session.exec(select(VentaPOS).order_by(VentaPOS.fecha.desc()).limit(limite)).all()
-        return [_serialize_sale(session, row, False) for row in rows]
+        rows = session.exec(
+            select(VentaPOS)
+            .order_by(VentaPOS.fecha.desc())
+            .limit(limite)
+        ).all()
+
+        sale_ids = [
+            int(row.id_venta)
+            for row in rows
+            if row.id_venta is not None
+        ]
+        extras_by_sale: Dict[int, POSVentaExtra] = {}
+        controls_by_sale: Dict[int, POSVentaControl] = {}
+
+        if sale_ids:
+            extras = session.exec(
+                select(POSVentaExtra).where(
+                    POSVentaExtra.id_venta.in_(sale_ids)
+                )
+            ).all()
+            extras_by_sale = {row.id_venta: row for row in extras}
+
+            controls = session.exec(
+                select(POSVentaControl).where(
+                    POSVentaControl.id_venta.in_(sale_ids)
+                )
+            ).all()
+            controls_by_sale = {row.id_venta: row for row in controls}
+
+        result = []
+        for sale in rows:
+            sale_id = int(sale.id_venta or 0)
+            extra = extras_by_sale.get(sale_id)
+            control = controls_by_sale.get(sale_id)
+            result.append(
+                {
+                    "id_venta": sale.id_venta,
+                    "folio": sale.folio,
+                    "usuario": sale.usuario,
+                    "subtotal": _money(sale.subtotal),
+                    "descuento_total": _money(sale.descuento_total),
+                    "total": _money(sale.total),
+                    "costo_total": _money(sale.costo_total),
+                    "ganancia": _money(sale.ganancia),
+                    "efectivo_recibido": _money(sale.efectivo_recibido),
+                    "cambio": _money(sale.cambio),
+                    "estado": sale.estado,
+                    "fecha": sale.fecha,
+                    "id_cliente": extra.id_cliente if extra else None,
+                    "cliente_nombre": extra.cliente_nombre if extra else None,
+                    "tipo_venta": extra.tipo_venta if extra else "CONTADO",
+                    "saldo_pendiente": _money(
+                        extra.saldo_pendiente if extra else 0
+                    ),
+                    "fecha_vencimiento": (
+                        extra.fecha_vencimiento if extra else None
+                    ),
+                    "descuento_promociones": _money(
+                        extra.descuento_promociones if extra else 0
+                    ),
+                    "id_sesion": control.id_sesion if control else None,
+                    "motivo_anulacion": (
+                        control.motivo_anulacion if control else None
+                    ),
+                    "fecha_anulacion": (
+                        control.fecha_anulacion if control else None
+                    ),
+                }
+            )
+
+        return result
 
     @app.get("/pos/v3/ventas/{sale_id}")
     def get_sale_v3(
@@ -2288,16 +2466,46 @@ def registrar_modulo_pos_fase3(
         session: Session = Depends(get_session),
         current_user: Any = Depends(read_user),
     ):
-        statement = select(POSCredito).order_by(POSCredito.fecha_vencimiento.asc())
+        statement = select(POSCredito).order_by(
+            POSCredito.fecha_vencimiento.asc()
+        )
         if estado:
             statement = statement.where(POSCredito.estado == estado.upper())
         if client_id:
             statement = statement.where(POSCredito.id_cliente == client_id)
+
         rows = session.exec(statement).all()
+        client_ids = list({row.id_cliente for row in rows})
+        sale_ids = list({row.id_venta for row in rows})
+        clients_by_id: Dict[int, POSCliente] = {}
+        sales_by_id: Dict[int, VentaPOS] = {}
+
+        if client_ids:
+            clients = session.exec(
+                select(POSCliente).where(
+                    POSCliente.id_cliente.in_(client_ids)
+                )
+            ).all()
+            clients_by_id = {
+                int(row.id_cliente or 0): row
+                for row in clients
+            }
+
+        if sale_ids:
+            sales = session.exec(
+                select(VentaPOS).where(
+                    VentaPOS.id_venta.in_(sale_ids)
+                )
+            ).all()
+            sales_by_id = {
+                int(row.id_venta or 0): row
+                for row in sales
+            }
+
         result = []
         for row in rows:
-            client = session.get(POSCliente, row.id_cliente)
-            sale = session.get(VentaPOS, row.id_venta)
+            client = clients_by_id.get(row.id_cliente)
+            sale = sales_by_id.get(row.id_venta)
             result.append(
                 {
                     **_dump(row),
@@ -2307,6 +2515,7 @@ def registrar_modulo_pos_fase3(
                     "folio_venta": sale.folio if sale else None,
                 }
             )
+
         return result
 
     @app.post("/pos/v3/creditos/{credit_id}/abonos")

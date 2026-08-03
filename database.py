@@ -44,6 +44,10 @@ def normalize_database_url(url: str) -> str:
 
 DATABASE_URL = normalize_database_url(DATABASE_URL)
 
+# RACKNOVA_POOL_TUNING
+# Ambos drivers usados por RackNova aceptan connect_timeout.
+CONNECT_ARGS = {"connect_timeout": 10}
+
 try:
     engine = create_engine(
         DATABASE_URL,
@@ -52,6 +56,10 @@ try:
         pool_recycle=280,
         pool_size=5,
         max_overflow=10,
+        pool_timeout=20,
+        pool_use_lifo=True,
+        pool_reset_on_return="rollback",
+        connect_args=CONNECT_ARGS,
     )
 
     print("✅ Engine creado exitosamente")

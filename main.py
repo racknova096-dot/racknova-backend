@@ -21,6 +21,7 @@ import os
 import json
 import urllib.request
 import urllib.error
+from time import perf_counter
 
 from pos_module import registrar_modulo_pos
 from pos_phase3 import registrar_modulo_pos_fase3
@@ -107,6 +108,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# RACKNOVA_PERFORMANCE_INDEXES
+SLOW_REQUEST_MS = float(os.getenv("SLOW_REQUEST_MS", "600"))
+
+
+@app.middleware("http")
+async def medir_tiempo_solicitud(request, call_next):
+    inicio = perf_counter()
+    response = await call_next(request)
+    duracion_ms = (perf_counter() - inicio) * 1000
+
+    response.headers["Server-Timing"] = f"app;dur={duracion_ms:.2f}"
+    response.headers["X-Process-Time-Ms"] = f"{duracion_ms:.2f}"
+
+    if duracion_ms >= SLOW_REQUEST_MS:
+        print(
+            f"⚠️ Solicitud lenta: {request.method} {request.url.path} "
+            f"→ {duracion_ms:.2f} ms"
+        )
+
+    return response
 
 SessionDep = Annotated[Session, Depends(get_session)]
 
@@ -419,6 +442,178 @@ def modificar_columna_si_existe(
         print(f"⚠️ No se pudo ajustar {tabla}.{columna}: {e}")
 
 
+
+def indice_existe(
+    session: Session,
+    tabla: str,
+    indice: str,
+) -> bool:
+    try:
+        if es_postgres():
+            row = session.exec(
+                text(
+                    """
+                    SELECT 1
+                    FROM pg_indexes
+                    WHERE schemaname = 'public'
+                      AND tablename = :tabla
+                      AND indexname = :indice
+                    LIMIT 1;
+                    """
+                ).bindparams(tabla=tabla, indice=indice)
+            ).first()
+        else:
+            row = session.exec(
+                text(
+                    """
+                    SELECT 1
+                    FROM information_schema.statistics
+                    WHERE table_schema = DATABASE()
+                      AND table_name = :tabla
+                      AND index_name = :indice
+                    LIMIT 1;
+                    """
+                ).bindparams(tabla=tabla, indice=indice)
+            ).first()
+
+        return row is not None
+    except Exception as exc:
+        print(f"⚠️ No se pudo consultar el índice {indice}: {exc}")
+        return False
+
+
+def crear_indice_si_falta(
+    session: Session,
+    *,
+    tabla: str,
+    indice: str,
+    columnas: List[str],
+) -> None:
+    columnas_tabla = set(obtener_columnas(session, tabla))
+
+    if not columnas_tabla:
+        return
+
+    if not set(columnas).issubset(columnas_tabla):
+        return
+
+    if indice_existe(session, tabla, indice):
+        return
+
+    columnas_sql = ", ".join(columnas)
+
+    try:
+        session.exec(
+            text(
+                f"CREATE INDEX {indice} "
+                f"ON {tabla} ({columnas_sql});"
+            )
+        )
+        session.commit()
+        print(f"✅ Índice creado: {indice}")
+    except Exception as exc:
+        session.rollback()
+        print(f"⚠️ No se pudo crear {indice}: {exc}")
+
+
+def crear_indices_rendimiento() -> None:
+    indices = [
+        ("producto", "idx_producto_sku_fast", ["sku"]),
+        ("producto", "idx_producto_nombre_fast", ["nombre"]),
+        ("producto", "idx_producto_ubicacion_fast", ["rack", "nivel", "slot"]),
+        ("producto", "idx_producto_caducidad_fast", ["caducidad"]),
+        (
+            "producto_lote",
+            "idx_lote_fefo_fast",
+            ["sku", "cantidad_actual", "caducidad", "fecha_ingreso"],
+        ),
+        ("movimiento", "idx_movimiento_fecha_fast", ["fecha"]),
+        ("movimiento", "idx_movimiento_sku_fecha_fast", ["sku", "fecha"]),
+        (
+            "movimiento",
+            "idx_movimiento_usuario_fecha_fast",
+            ["usuario", "fecha"],
+        ),
+        (
+            "movimiento",
+            "idx_movimiento_accion_fecha_fast",
+            ["accion", "fecha"],
+        ),
+        (
+            "pos_sesion_caja",
+            "idx_pos_sesion_usuario_estado_fast",
+            ["usuario", "estado", "fecha_apertura"],
+        ),
+        (
+            "pos_promocion",
+            "idx_pos_promocion_vigente_fast",
+            ["activa", "sku", "fecha_inicio", "fecha_fin", "prioridad"],
+        ),
+        (
+            "pos_producto_configuracion",
+            "idx_pos_config_sku_activo_fast",
+            ["sku", "activo"],
+        ),
+        (
+            "pos_precio_cliente",
+            "idx_pos_precio_cliente_fast",
+            ["id_cliente", "sku", "activo"],
+        ),
+        (
+            "pos_credito",
+            "idx_pos_credito_cliente_estado_fast",
+            ["id_cliente", "estado", "fecha_vencimiento"],
+        ),
+        (
+            "pos_abono",
+            "idx_pos_abono_credito_fecha_fast",
+            ["id_credito", "fecha"],
+        ),
+        ("venta_pos", "idx_venta_pos_fecha_fast", ["fecha"]),
+        (
+            "venta_pos",
+            "idx_venta_pos_usuario_fecha_fast",
+            ["usuario", "fecha"],
+        ),
+        (
+            "venta_pos_detalle",
+            "idx_venta_detalle_venta_fast",
+            ["id_venta"],
+        ),
+        ("venta_pos_pago", "idx_venta_pago_venta_fast", ["id_venta"]),
+        (
+            "pos_venta_extra",
+            "idx_pos_venta_extra_venta_cliente_fast",
+            ["id_venta", "id_cliente"],
+        ),
+        (
+            "pos_venta_control",
+            "idx_pos_venta_control_operacion_fast",
+            ["operacion_id"],
+        ),
+        (
+            "pos_venta_detalle_extra",
+            "idx_pos_detalle_extra_detalle_fast",
+            ["id_detalle"],
+        ),
+        (
+            "pos_devolucion_detalle",
+            "idx_pos_devolucion_detalle_venta_fast",
+            ["id_detalle_venta"],
+        ),
+        ("pos_auditoria", "idx_pos_auditoria_fecha_fast", ["fecha"]),
+    ]
+
+    with Session(engine) as session:
+        for tabla, indice, columnas in indices:
+            crear_indice_si_falta(
+                session,
+                tabla=tabla,
+                indice=indice,
+                columnas=columnas,
+            )
+
+
 def ejecutar_migraciones_ligeras():
     with Session(engine) as session:
         agregar_columna_si_falta(
@@ -597,6 +792,7 @@ def on_startup():
         SQLModel.metadata.create_all(engine)
 
         ejecutar_migraciones_ligeras()
+        crear_indices_rendimiento()
         crear_admin_inicial()
 
         print("✅ Database tables created/updated successfully")
