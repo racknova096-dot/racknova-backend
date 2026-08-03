@@ -229,6 +229,10 @@ class ProductoConfigRequest(BaseModel):
     activo: bool = True
 
 
+class ProductoUnidadRequest(BaseModel):
+    unidad_venta: str = PydanticField(min_length=1, max_length=30)
+
+
 class PrecioClienteRequest(BaseModel):
     id_cliente: int = PydanticField(gt=0)
     sku: str = PydanticField(min_length=1, max_length=100)
@@ -303,6 +307,87 @@ class DevolucionV3Request(BaseModel):
 # UTILIDADES
 # ==========================================================
 
+
+
+_PRODUCT_UNITS: Dict[str, Dict[str, Any]] = {
+    "pieza": {
+        "unidad_venta": "pieza",
+        "etiqueta": "Pieza",
+        "simbolo": "pza",
+        "permite_fraccion": False,
+        "factor_inventario": 1.0,
+        "unidad_interna": "pieza",
+    },
+    "kg": {
+        "unidad_venta": "kg",
+        "etiqueta": "Kilogramo",
+        "simbolo": "kg",
+        "permite_fraccion": True,
+        "factor_inventario": 1000.0,
+        "unidad_interna": "gramo",
+    },
+    "litro": {
+        "unidad_venta": "litro",
+        "etiqueta": "Litro",
+        "simbolo": "L",
+        "permite_fraccion": True,
+        "factor_inventario": 1000.0,
+        "unidad_interna": "mililitro",
+    },
+}
+
+_PRODUCT_UNIT_ALIASES = {
+    "pieza": "pieza",
+    "piezas": "pieza",
+    "pza": "pieza",
+    "pzas": "pieza",
+    "unidad": "pieza",
+    "unidades": "pieza",
+    "kg": "kg",
+    "kilo": "kg",
+    "kilos": "kg",
+    "kilogramo": "kg",
+    "kilogramos": "kg",
+    "l": "litro",
+    "lt": "litro",
+    "lts": "litro",
+    "litro": "litro",
+    "litros": "litro",
+}
+
+
+def _product_unit(value: Any) -> Tuple[str, Dict[str, Any]]:
+    clean = str(value or "pieza").strip().lower()
+    key = _PRODUCT_UNIT_ALIASES.get(clean)
+    if not key:
+        raise HTTPException(
+            status_code=400,
+            detail="Unidad inválida. Usa pieza, kg o litro.",
+        )
+    return key, _PRODUCT_UNITS[key]
+
+
+def _serialize_product_unit(
+    sku: str,
+    row: Optional[POSProductoConfiguracion],
+    *,
+    product_exists: bool,
+) -> Dict[str, Any]:
+    key, definition = _product_unit(row.unidad_venta if row else "pieza")
+    factor = float(row.factor_inventario if row else definition["factor_inventario"])
+    return {
+        "sku": sku,
+        "producto_existe": product_exists,
+        "unidad_venta": key,
+        "etiqueta": definition["etiqueta"],
+        "simbolo": definition["simbolo"],
+        "unidad_interna": definition["unidad_interna"],
+        "permite_fraccion": bool(
+            row.permite_fraccion if row else definition["permite_fraccion"]
+        ),
+        "factor_inventario": factor,
+        "activo": bool(row.activo) if row else True,
+    }
 
 
 def _dump(model: Any) -> Dict[str, Any]:
@@ -1457,6 +1542,97 @@ def registrar_modulo_pos_fase3(
         return {"cliente": _serialize_client(row, session), "creditos": result}
 
     # -------------------- CONFIGURACIÓN / PRECIOS --------------------
+
+    @app.get("/pos/v3/productos/unidad/{sku}")
+    def get_product_unit(
+        sku: str,
+        session: Session = Depends(get_session),
+        current_user: Any = Depends(read_user),
+    ):
+        clean_sku = sku.strip()
+        if not clean_sku:
+            raise HTTPException(status_code=400, detail="SKU obligatorio.")
+        product = session.exec(
+            select(Producto).where(Producto.sku == clean_sku)
+        ).first()
+        row = _product_config(session, clean_sku)
+        return _serialize_product_unit(
+            clean_sku,
+            row,
+            product_exists=product is not None,
+        )
+
+    @app.put("/pos/v3/productos/unidad/{sku}")
+    def save_product_unit(
+        sku: str,
+        data: ProductoUnidadRequest,
+        session: Session = Depends(get_session),
+        current_user: Any = Depends(operator_user),
+    ):
+        clean_sku = sku.strip()
+        if not clean_sku:
+            raise HTTPException(status_code=400, detail="SKU obligatorio.")
+
+        unit_key, definition = _product_unit(data.unidad_venta)
+        product = session.exec(
+            select(Producto).where(Producto.sku == clean_sku)
+        ).first()
+        existing = _product_config(session, clean_sku)
+
+        if existing:
+            existing_key, _ = _product_unit(existing.unidad_venta)
+            if (
+                product is not None
+                and int(product.cantidad or 0) > 0
+                and existing_key != unit_key
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "No se puede cambiar la unidad de un producto con existencias. "
+                        "Deja el stock en cero o utiliza un SKU nuevo."
+                    ),
+                )
+
+        now = mexico_now()
+        row = _product_config(
+            session,
+            clean_sku,
+            create=True,
+            now=now,
+            user=_name(current_user),
+        )
+        assert row is not None
+
+        row.unidad_venta = definition["unidad_venta"]
+        row.permite_fraccion = definition["permite_fraccion"]
+        row.factor_inventario = definition["factor_inventario"]
+        row.activo = True
+        row.fecha_actualizacion = now
+        row.actualizado_por = _name(current_user)
+        session.add(row)
+
+        _audit(
+            session,
+            action="CONFIGURAR_UNIDAD_PRODUCTO",
+            entity="producto",
+            entity_id=clean_sku,
+            details={
+                "unidad_venta": definition["unidad_venta"],
+                "unidad_interna": definition["unidad_interna"],
+                "factor_inventario": definition["factor_inventario"],
+            },
+            user=_name(current_user),
+            now=now,
+        )
+        session.commit()
+        session.refresh(row)
+
+        return _serialize_product_unit(
+            clean_sku,
+            row,
+            product_exists=product is not None,
+        )
 
     @app.get("/pos/v3/productos/configuracion")
     def list_product_configs(
