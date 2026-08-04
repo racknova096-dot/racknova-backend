@@ -12,6 +12,7 @@ from fastapi import Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field as PydanticField
 from sqlalchemy import or_
 from sqlmodel import Field, Session, SQLModel, select
+from sqlalchemy import text as sa_text
 
 # La Fase 3 es aditiva: reutiliza las tablas y modelos estables de la Fase 2.
 try:
@@ -1295,6 +1296,293 @@ def _session_report(
             [],
         ),
     }
+
+
+
+# RACKNOVA_POS_V4_CAJAS_FIJAS
+POS_V4_FIXED_BOXES = ((1, "Caja 1"), (2, "Caja 2"))
+
+
+def _v4_model_fields(model: Any) -> Dict[str, Any]:
+    return dict(
+        getattr(model, "model_fields", None)
+        or getattr(model, "__fields__", None)
+        or {}
+    )
+
+
+def _v4_model_kwargs(model: Any, values: Dict[str, Any]) -> Dict[str, Any]:
+    fields = _v4_model_fields(model)
+    return {key: value for key, value in values.items() if key in fields}
+
+
+def _v4_pk_name(model: Any, candidates: List[str]) -> Optional[str]:
+    fields = _v4_model_fields(model)
+    for name in candidates:
+        if name in fields:
+            return name
+    return None
+
+
+def _v4_user_keys(current_user: Any) -> set[str]:
+    return {
+        str(_key(current_user) or "").strip(),
+        str(_name(current_user) or "").strip(),
+    } - {""}
+
+
+def _v4_session_belongs_to_user(
+    cash_session: POSSesionCaja,
+    current_user: Any,
+) -> bool:
+    return str(cash_session.usuario or "").strip() in _v4_user_keys(current_user)
+
+
+def _v4_ensure_schema(session: Session) -> None:
+    session.connection().execute(
+        sa_text(
+            """
+            CREATE TABLE IF NOT EXISTS pos_mayoreo_menudeo (
+                id_regla SERIAL PRIMARY KEY,
+                sku VARCHAR(120) NOT NULL UNIQUE,
+                nombre VARCHAR(255) NOT NULL,
+                unidad VARCHAR(20) NOT NULL,
+                precio_menudeo NUMERIC(14, 4) NOT NULL,
+                cantidad_mayoreo NUMERIC(14, 4) NOT NULL,
+                precio_mayoreo NUMERIC(14, 4) NOT NULL,
+                cantidad_mayoreo_especial NUMERIC(14, 4),
+                precio_mayoreo_especial NUMERIC(14, 4),
+                fecha_inicio TIMESTAMP,
+                fecha_fin TIMESTAMP,
+                activo BOOLEAN NOT NULL DEFAULT TRUE,
+                creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                actualizado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    session.commit()
+
+
+def _v4_serialize_wholesale(row: Any) -> Dict[str, Any]:
+    data = dict(row)
+    for key in (
+        "precio_menudeo",
+        "cantidad_mayoreo",
+        "precio_mayoreo",
+        "cantidad_mayoreo_especial",
+        "precio_mayoreo_especial",
+    ):
+        if data.get(key) is not None:
+            data[key] = float(data[key])
+    return data
+
+
+def _v4_wholesale_price(
+    session: Session,
+    sku: str,
+    unit: str,
+    quantity: float,
+    fallback_price: float,
+) -> Dict[str, Any]:
+    _v4_ensure_schema(session)
+    row = session.connection().execute(
+        sa_text(
+            """
+            SELECT *
+            FROM pos_mayoreo_menudeo
+            WHERE sku = :sku
+              AND activo = TRUE
+              AND unidad IN ('kg', 'litro')
+              AND (fecha_inicio IS NULL OR fecha_inicio <= CURRENT_TIMESTAMP)
+              AND (fecha_fin IS NULL OR fecha_fin >= CURRENT_TIMESTAMP)
+            LIMIT 1
+            """
+        ),
+        {"sku": sku},
+    ).mappings().first()
+
+    normalized_unit = str(unit or "").strip().lower()
+    if not row or normalized_unit not in {"kg", "litro", "l"}:
+        return {
+            "precio": _money(fallback_price),
+            "nivel": "normal",
+            "regla": None,
+        }
+
+    quantity = max(float(quantity or 0), 0)
+    price = float(row["precio_menudeo"])
+    level = "menudeo"
+
+    special_qty = row.get("cantidad_mayoreo_especial")
+    special_price = row.get("precio_mayoreo_especial")
+
+    if (
+        special_qty is not None
+        and special_price is not None
+        and quantity >= float(special_qty)
+    ):
+        price = float(special_price)
+        level = "mayoreo_especial"
+    elif quantity >= float(row["cantidad_mayoreo"]):
+        price = float(row["precio_mayoreo"])
+        level = "mayoreo"
+
+    return {
+        "precio": _money(price),
+        "nivel": level,
+        "regla": _v4_serialize_wholesale(row),
+    }
+
+
+def _v4_ensure_fixed_box(
+    session: Session,
+    box_number: int,
+) -> Dict[str, Any]:
+    if box_number not in {1, 2}:
+        raise HTTPException(
+            status_code=400,
+            detail="Solo existen Caja 1 y Caja 2.",
+        )
+
+    name = f"Caja {box_number}"
+    box_model = globals().get("POSCaja")
+
+    if box_model is None:
+        return {"id_caja": box_number, "nombre": name}
+
+    name_field = _v4_pk_name(
+        box_model,
+        ["nombre", "caja_nombre", "name"],
+    )
+    pk_field = _v4_pk_name(box_model, ["id_caja", "id"])
+    box = None
+
+    if name_field:
+        box = session.exec(
+            select(box_model).where(getattr(box_model, name_field) == name)
+        ).first()
+
+    if box is None:
+        values = {
+            "nombre": name,
+            "caja_nombre": name,
+            "name": name,
+            "activa": True,
+            "activo": True,
+            "estado": "DISPONIBLE",
+            "numero": box_number,
+        }
+        box = box_model(**_v4_model_kwargs(box_model, values))
+        session.add(box)
+        session.commit()
+        session.refresh(box)
+
+    return {
+        "id_caja": getattr(box, pk_field, box_number) if pk_field else box_number,
+        "nombre": name,
+    }
+
+
+def _v4_open_sessions(session: Session) -> List[POSSesionCaja]:
+    return list(
+        session.exec(
+            select(POSSesionCaja).where(POSSesionCaja.estado == "ABIERTA")
+        ).all()
+    )
+
+
+def _v4_repair_session_links(
+    session: Session,
+    cash_session: POSSesionCaja,
+) -> None:
+    """Repara ventas/devoluciones antiguas sin id_sesion.
+
+    Solo enlaza operaciones del mismo usuario y dentro del periodo de la caja.
+    Esto corrige reportes vacíos creados antes de la actualización.
+    """
+    start = cash_session.fecha_apertura
+    end = cash_session.fecha_cierre or datetime.now()
+    user = str(cash_session.usuario or "").strip()
+
+    linked_ids = {
+        int(row.id_venta)
+        for row in session.exec(select(POSVentaControl)).all()
+        if getattr(row, "id_venta", None) is not None
+    }
+
+    sales_query = select(VentaPOS).where(
+        VentaPOS.fecha >= start,
+        VentaPOS.fecha <= end,
+    )
+    sales = session.exec(sales_query).all()
+
+    for sale in sales:
+        if str(getattr(sale, "usuario", "") or "").strip() != user:
+            continue
+        if int(sale.id_venta) in linked_ids:
+            continue
+        values = {
+            "id_venta": sale.id_venta,
+            "id_sesion": cash_session.id_sesion,
+            "fecha": getattr(sale, "fecha", datetime.now()),
+        }
+        session.add(POSVentaControl(**_v4_model_kwargs(POSVentaControl, values)))
+        linked_ids.add(int(sale.id_venta))
+
+    returns = session.exec(
+        select(POSDevolucion).where(
+            POSDevolucion.fecha >= start,
+            POSDevolucion.fecha <= end,
+        )
+    ).all()
+
+    for row in returns:
+        if str(getattr(row, "usuario", "") or "").strip() != user:
+            continue
+        if getattr(row, "id_sesion", None) in (None, 0):
+            row.id_sesion = cash_session.id_sesion
+            session.add(row)
+
+    session.commit()
+
+
+def _v4_safe_session_report(
+    session: Session,
+    cash_session: POSSesionCaja,
+    Movimiento: Any,
+) -> Dict[str, Any]:
+    _v4_repair_session_links(session, cash_session)
+    try:
+        report = _session_report(session, cash_session, Movimiento)
+        report["reporte_incompleto"] = False
+        return report
+    except Exception as exc:
+        summary = _cash_summary(session, cash_session)
+        return {
+            "sesion": summary,
+            "periodo": {
+                "inicio": cash_session.fecha_apertura,
+                "fin": cash_session.fecha_cierre or datetime.now(),
+            },
+            "totales": {
+                "ventas": _money(getattr(cash_session, "total_ventas", 0)),
+                "devoluciones": 0,
+                "ventas_netas": _money(getattr(cash_session, "total_ventas", 0)),
+                "numero_ventas": int(getattr(cash_session, "ventas_completadas", 0) or 0),
+                "ventas_canceladas": 0,
+                "numero_devoluciones": 0,
+                "descuentos": 0,
+                "costo": 0,
+                "ganancia_antes_devoluciones": 0,
+            },
+            "ventas": [],
+            "devoluciones": [],
+            "movimientos_productos": [],
+            "movimientos_efectivo": summary.get("movimientos_efectivo", []),
+            "reporte_incompleto": True,
+            "detalle_error": str(exc),
+        }
 
 
 def _day_bounds(report_date: date) -> Tuple[datetime, datetime]:
@@ -2887,13 +3175,8 @@ def registrar_modulo_pos_fase3(
         session.refresh(row)
 
         return {
-            "mensaje": "Caja cerrada.",
+            "mensaje": "Caja cerrada correctamente.",
             "sesion": _cash_summary(session, row),
-            "resumen_turno": _session_report(
-                session,
-                row,
-                Movimiento,
-            ),
         }
 
     # -------------------- CANCELACIONES / DEVOLUCIONES V3 --------------------
@@ -3280,3 +3563,320 @@ def registrar_modulo_pos_fase3(
             }
             for row in rows
         ]
+
+    # ==========================================================
+    # RACKNOVA POS V4: CAJAS FIJAS, REPORTES Y MAYOREO
+    # ==========================================================
+
+    @app.get("/pos/v4/cajas")
+    def fixed_boxes_v4(
+        session: Session = Depends(get_session),
+        current_user: Any = Depends(operator_user),
+    ):
+        open_rows = _v4_open_sessions(session)
+        result = []
+
+        for number, name in POS_V4_FIXED_BOXES:
+            box = _v4_ensure_fixed_box(session, number)
+            active = next(
+                (
+                    row
+                    for row in open_rows
+                    if str(row.caja_nombre or "").strip() == name
+                ),
+                None,
+            )
+            result.append(
+                {
+                    "numero": number,
+                    "id_caja": box["id_caja"],
+                    "nombre": name,
+                    "estado": "ABIERTA" if active else "DISPONIBLE",
+                    "sesion": _cash_summary(session, active) if active else None,
+                }
+            )
+
+        return result
+
+    @app.get("/pos/v4/cajas/abiertas")
+    def open_boxes_v4(
+        session: Session = Depends(get_session),
+        current_user: Any = Depends(admin_user),
+    ):
+        return [
+            _cash_summary(session, row)
+            for row in _v4_open_sessions(session)
+            if str(row.caja_nombre or "").strip() in {"Caja 1", "Caja 2"}
+        ]
+
+    @app.post("/pos/v4/cajas/{box_number}/abrir")
+    def open_fixed_box_v4(
+        box_number: int,
+        payload: Dict[str, Any],
+        session: Session = Depends(get_session),
+        current_user: Any = Depends(operator_user),
+    ):
+        box = _v4_ensure_fixed_box(session, box_number)
+        box_name = box["nombre"]
+        open_rows = _v4_open_sessions(session)
+
+        if any(_v4_session_belongs_to_user(row, current_user) for row in open_rows):
+            raise HTTPException(
+                status_code=409,
+                detail="Tu usuario ya tiene una caja abierta.",
+            )
+
+        if any(str(row.caja_nombre or "").strip() == box_name for row in open_rows):
+            raise HTTPException(
+                status_code=409,
+                detail=f"{box_name} ya está siendo utilizada.",
+            )
+
+        now = datetime.now()
+        initial_fund = max(float(payload.get("fondo_inicial") or 0), 0)
+        values = {
+            "id_caja": box.get("id_caja"),
+            "caja_nombre": box_name,
+            "nombre_caja": box_name,
+            "usuario": _name(current_user),
+            "usuario_id": _key(current_user),
+            "fecha_apertura": now,
+            "fecha_cierre": None,
+            "estado": "ABIERTA",
+            "fondo_inicial": initial_fund,
+            "total_ventas": 0,
+            "efectivo_ventas": 0,
+            "efectivo_esperado": initial_fund,
+            "efectivo_contado": None,
+            "diferencia": None,
+            "ventas_completadas": 0,
+            "observaciones": payload.get("observaciones"),
+        }
+
+        row = POSSesionCaja(**_v4_model_kwargs(POSSesionCaja, values))
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+
+        return {
+            "mensaje": f"{box_name} abierta correctamente.",
+            "sesion": _cash_summary(session, row),
+        }
+
+    @app.get("/pos/v4/caja/sesiones/{session_id}/resumen")
+    def session_report_safe_v4(
+        session_id: int,
+        session: Session = Depends(get_session),
+        current_user: Any = Depends(operator_user),
+    ):
+        row = session.get(POSSesionCaja, session_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Sesión de caja no encontrada.")
+
+        if _role(current_user) != "admin" and not _v4_session_belongs_to_user(row, current_user):
+            raise HTTPException(
+                status_code=403,
+                detail="Solo puedes consultar tu propia caja.",
+            )
+
+        return _v4_safe_session_report(session, row, Movimiento)
+
+    @app.get("/pos/v4/reportes/diario")
+    def daily_report_v4(
+        fecha: str,
+        session: Session = Depends(get_session),
+        current_user: Any = Depends(admin_user),
+    ):
+        try:
+            report_date = date.fromisoformat(fecha)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Fecha inválida. Usa YYYY-MM-DD.") from exc
+
+        start, end = _day_bounds(report_date)
+        rows = session.exec(
+            select(POSSesionCaja).where(
+                POSSesionCaja.fecha_apertura < end,
+                (POSSesionCaja.fecha_cierre == None) | (POSSesionCaja.fecha_cierre >= start),
+            ).order_by(POSSesionCaja.fecha_apertura.asc())
+        ).all()
+
+        reports = [_v4_safe_session_report(session, row, Movimiento) for row in rows]
+
+        def total(key: str) -> float:
+            return _money(sum(float(item["totales"].get(key) or 0) for item in reports))
+
+        return {
+            "fecha": fecha,
+            "totales": {
+                "ventas": total("ventas"),
+                "devoluciones": total("devoluciones"),
+                "ventas_netas": total("ventas_netas"),
+                "numero_ventas": sum(int(item["totales"].get("numero_ventas") or 0) for item in reports),
+                "numero_devoluciones": sum(int(item["totales"].get("numero_devoluciones") or 0) for item in reports),
+                "descuentos": total("descuentos"),
+                "costo": total("costo"),
+                "ganancia": total("ganancia_antes_devoluciones"),
+                "efectivo_esperado": _money(sum(float(item["sesion"].get("efectivo_esperado") or 0) for item in reports)),
+                "diferencias": _money(sum(float(item["sesion"].get("diferencia") or 0) for item in reports)),
+            },
+            "sesiones": reports,
+        }
+
+    @app.get("/pos/v4/mayoreo")
+    def list_wholesale_v4(
+        session: Session = Depends(get_session),
+        current_user: Any = Depends(operator_user),
+    ):
+        _v4_ensure_schema(session)
+        rows = session.connection().execute(
+            sa_text("SELECT * FROM pos_mayoreo_menudeo ORDER BY nombre, sku")
+        ).mappings().all()
+        return [_v4_serialize_wholesale(row) for row in rows]
+
+    @app.post("/pos/v4/mayoreo")
+    def save_wholesale_v4(
+        payload: Dict[str, Any],
+        session: Session = Depends(get_session),
+        current_user: Any = Depends(admin_user),
+    ):
+        _v4_ensure_schema(session)
+        sku = str(payload.get("sku") or "").strip()
+        name = str(payload.get("nombre") or "").strip()
+        unit = str(payload.get("unidad") or "").strip().lower()
+
+        if not sku or not name:
+            raise HTTPException(status_code=400, detail="SKU y nombre son obligatorios.")
+        if unit not in {"kg", "litro"}:
+            raise HTTPException(status_code=400, detail="La unidad debe ser kg o litro.")
+
+        retail = float(payload.get("precio_menudeo") or 0)
+        wholesale_qty = float(payload.get("cantidad_mayoreo") or 0)
+        wholesale_price = float(payload.get("precio_mayoreo") or 0)
+        special_qty = payload.get("cantidad_mayoreo_especial")
+        special_price = payload.get("precio_mayoreo_especial")
+
+        if retail <= 0 or wholesale_qty <= 0 or wholesale_price <= 0:
+            raise HTTPException(status_code=400, detail="Precios y cantidad de mayoreo deben ser mayores a cero.")
+        if wholesale_price >= retail:
+            raise HTTPException(status_code=400, detail="El precio de mayoreo debe ser menor al menudeo.")
+        if (special_qty is None) != (special_price is None):
+            raise HTTPException(status_code=400, detail="Completa cantidad y precio del mayoreo especial.")
+        if special_qty is not None:
+            special_qty = float(special_qty)
+            special_price = float(special_price)
+            if special_qty <= wholesale_qty:
+                raise HTTPException(status_code=400, detail="El mayoreo especial debe iniciar después del mayoreo normal.")
+            if special_price >= wholesale_price:
+                raise HTTPException(status_code=400, detail="El precio especial debe ser menor al mayoreo normal.")
+
+        params = {
+            "sku": sku,
+            "nombre": name,
+            "unidad": unit,
+            "precio_menudeo": retail,
+            "cantidad_mayoreo": wholesale_qty,
+            "precio_mayoreo": wholesale_price,
+            "cantidad_mayoreo_especial": special_qty,
+            "precio_mayoreo_especial": special_price,
+            "fecha_inicio": payload.get("fecha_inicio") or None,
+            "fecha_fin": payload.get("fecha_fin") or None,
+            "activo": bool(payload.get("activo", True)),
+        }
+
+        session.connection().execute(
+            sa_text(
+                """
+                INSERT INTO pos_mayoreo_menudeo (
+                    sku, nombre, unidad, precio_menudeo,
+                    cantidad_mayoreo, precio_mayoreo,
+                    cantidad_mayoreo_especial, precio_mayoreo_especial,
+                    fecha_inicio, fecha_fin, activo, actualizado_en
+                ) VALUES (
+                    :sku, :nombre, :unidad, :precio_menudeo,
+                    :cantidad_mayoreo, :precio_mayoreo,
+                    :cantidad_mayoreo_especial, :precio_mayoreo_especial,
+                    :fecha_inicio, :fecha_fin, :activo, CURRENT_TIMESTAMP
+                )
+                ON CONFLICT (sku) DO UPDATE SET
+                    nombre = EXCLUDED.nombre,
+                    unidad = EXCLUDED.unidad,
+                    precio_menudeo = EXCLUDED.precio_menudeo,
+                    cantidad_mayoreo = EXCLUDED.cantidad_mayoreo,
+                    precio_mayoreo = EXCLUDED.precio_mayoreo,
+                    cantidad_mayoreo_especial = EXCLUDED.cantidad_mayoreo_especial,
+                    precio_mayoreo_especial = EXCLUDED.precio_mayoreo_especial,
+                    fecha_inicio = EXCLUDED.fecha_inicio,
+                    fecha_fin = EXCLUDED.fecha_fin,
+                    activo = EXCLUDED.activo,
+                    actualizado_en = CURRENT_TIMESTAMP
+                """
+            ),
+            params,
+        )
+        session.commit()
+        return {"mensaje": "Regla de mayoreo guardada correctamente."}
+
+    @app.delete("/pos/v4/mayoreo/{rule_id}")
+    def delete_wholesale_v4(
+        rule_id: int,
+        session: Session = Depends(get_session),
+        current_user: Any = Depends(admin_user),
+    ):
+        _v4_ensure_schema(session)
+        result = session.connection().execute(
+            sa_text("DELETE FROM pos_mayoreo_menudeo WHERE id_regla = :id"),
+            {"id": rule_id},
+        )
+        session.commit()
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Regla no encontrada.")
+        return {"mensaje": "Regla de mayoreo eliminada."}
+
+    @app.post("/pos/v4/mayoreo/calcular")
+    def calculate_wholesale_v4(
+        payload: Dict[str, Any],
+        session: Session = Depends(get_session),
+        current_user: Any = Depends(operator_user),
+    ):
+        return _v4_wholesale_price(
+            session,
+            str(payload.get("sku") or "").strip(),
+            str(payload.get("unidad") or "").strip(),
+            float(payload.get("cantidad") or 0),
+            float(payload.get("precio_base") or 0),
+        )
+
+    @app.delete("/pos/v4/promociones/{promotion_id}")
+    def delete_promotion_v4(
+        promotion_id: int,
+        session: Session = Depends(get_session),
+        current_user: Any = Depends(admin_user),
+    ):
+        promotion_model = globals().get("POSPromocion")
+        if promotion_model is None:
+            raise HTTPException(status_code=501, detail="Modelo de promociones no disponible.")
+
+        row = session.get(promotion_model, promotion_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Promoción no encontrada.")
+
+        # Elimina primero tablas detalle que tengan id_promocion.
+        for model_name, model in list(globals().items()):
+            if model is promotion_model or "Promocion" not in model_name:
+                continue
+            fields = _v4_model_fields(model)
+            if "id_promocion" not in fields:
+                continue
+            try:
+                details = session.exec(
+                    select(model).where(getattr(model, "id_promocion") == promotion_id)
+                ).all()
+                for detail in details:
+                    session.delete(detail)
+            except Exception:
+                continue
+
+        session.delete(row)
+        session.commit()
+        return {"mensaje": "Promoción eliminada definitivamente."}
+
