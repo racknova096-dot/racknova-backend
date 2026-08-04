@@ -1064,6 +1064,239 @@ def _cash_summary(session: Session, cash_session: POSSesionCaja) -> Dict[str, An
     }
 
 
+
+# RACKNOVA_RESUMEN_CAJA_EQUIPO
+def _session_report(
+    session: Session,
+    cash_session: POSSesionCaja,
+    Movimiento: Any,
+) -> Dict[str, Any]:
+    summary = _cash_summary(session, cash_session)
+
+    controls = session.exec(
+        select(POSVentaControl).where(
+            POSVentaControl.id_sesion == cash_session.id_sesion
+        )
+    ).all()
+
+    sale_ids = [
+        int(row.id_venta)
+        for row in controls
+        if row.id_venta is not None
+    ]
+
+    sales: List[VentaPOS] = []
+
+    if sale_ids:
+        sales = session.exec(
+            select(VentaPOS)
+            .where(VentaPOS.id_venta.in_(sale_ids))
+            .order_by(VentaPOS.fecha.asc())
+        ).all()
+
+    returns = session.exec(
+        select(POSDevolucion)
+        .where(POSDevolucion.id_sesion == cash_session.id_sesion)
+        .order_by(POSDevolucion.fecha.asc())
+    ).all()
+
+    return_rows: List[Dict[str, Any]] = []
+
+    for return_row in returns:
+        details = session.exec(
+            select(POSDevolucionDetalle).where(
+                POSDevolucionDetalle.id_devolucion
+                == return_row.id_devolucion
+            )
+        ).all()
+
+        extra = session.exec(
+            select(POSDevolucionExtra).where(
+                POSDevolucionExtra.id_devolucion
+                == return_row.id_devolucion
+            )
+        ).first()
+
+        sale = session.get(VentaPOS, return_row.id_venta)
+
+        return_rows.append(
+            {
+                "id_devolucion": return_row.id_devolucion,
+                "folio": return_row.folio,
+                "id_venta": return_row.id_venta,
+                "folio_venta": sale.folio if sale else None,
+                "usuario": return_row.usuario,
+                "motivo": return_row.motivo,
+                "metodo_reembolso": return_row.metodo_reembolso,
+                "monto": _money(return_row.monto),
+                "ajuste_credito": _money(
+                    extra.ajuste_credito if extra else 0
+                ),
+                "reembolso_real": _money(
+                    extra.reembolso_real
+                    if extra
+                    else return_row.monto
+                ),
+                "estado": return_row.estado,
+                "fecha": return_row.fecha,
+                "items": [
+                    {
+                        "id_detalle": item.id_detalle,
+                        "sku": item.sku,
+                        "nombre": item.nombre,
+                        "cantidad": item.cantidad,
+                        "precio_unitario": _money(
+                            item.precio_unitario
+                        ),
+                        "subtotal": _money(item.subtotal),
+                    }
+                    for item in details
+                ],
+            }
+        )
+
+    product_movements: List[Dict[str, Any]] = []
+
+    for sale in sales:
+        details = session.exec(
+            select(VentaPOSDetalle).where(
+                VentaPOSDetalle.id_venta == sale.id_venta
+            )
+        ).all()
+
+        for detail in details:
+            detail_id = int(detail.id_detalle or 0)
+            extra = _detail_extra(session, detail_id)
+            factor = float(
+                extra.factor_inventario if extra else 1
+            ) or 1
+            sold_quantity = float(
+                extra.cantidad_venta
+                if extra
+                else detail.cantidad or 0
+            )
+            returned_inventory = _returned_inventory(
+                session,
+                detail_id,
+            )
+            returned_quantity = returned_inventory / factor
+            net_quantity = max(
+                sold_quantity - returned_quantity,
+                0,
+            )
+
+            location = "Sin ubicación registrada"
+            movement_link = session.exec(
+                select(POSVentaMovimiento).where(
+                    POSVentaMovimiento.id_detalle
+                    == detail.id_detalle
+                )
+            ).first()
+
+            if movement_link:
+                movement = session.get(
+                    Movimiento,
+                    movement_link.id_movimiento,
+                )
+
+                if movement and getattr(
+                    movement,
+                    "ubicacion",
+                    None,
+                ):
+                    location = str(movement.ubicacion)
+
+            product_movements.append(
+                {
+                    "id_venta": sale.id_venta,
+                    "id_detalle": detail.id_detalle,
+                    "folio": sale.folio,
+                    "fecha": sale.fecha,
+                    "usuario": sale.usuario,
+                    "estado_venta": sale.estado,
+                    "sku": detail.sku,
+                    "nombre": detail.nombre,
+                    "ubicacion": location,
+                    "unidad_venta": (
+                        extra.unidad_venta
+                        if extra
+                        else "pieza"
+                    ),
+                    "cantidad_vendida": _qty(sold_quantity),
+                    "cantidad_devuelta": _qty(
+                        returned_quantity
+                    ),
+                    "cantidad_neta": _qty(net_quantity),
+                    "precio_unitario": _money(
+                        detail.precio_unitario_final
+                    ),
+                    "ingreso_neto": _money(
+                        detail.precio_unitario_final
+                        * net_quantity
+                    ),
+                }
+            )
+
+    valid_sales = [
+        row
+        for row in sales
+        if row.estado != "CANCELADA"
+    ]
+
+    total_returns = _money(
+        sum(row["monto"] for row in return_rows)
+    )
+    sales_total = _money(
+        sum(row.total for row in valid_sales)
+    )
+
+    return {
+        "sesion": summary,
+        "periodo": {
+            "inicio": cash_session.fecha_apertura,
+            "fin": (
+                cash_session.fecha_cierre
+                or datetime.now()
+            ),
+        },
+        "totales": {
+            "ventas": sales_total,
+            "devoluciones": total_returns,
+            "ventas_netas": _money(
+                sales_total - total_returns
+            ),
+            "numero_ventas": len(valid_sales),
+            "ventas_canceladas": len(
+                [
+                    row
+                    for row in sales
+                    if row.estado == "CANCELADA"
+                ]
+            ),
+            "numero_devoluciones": len(return_rows),
+            "descuentos": _money(
+                sum(row.descuento_total for row in valid_sales)
+            ),
+            "costo": _money(
+                sum(row.costo_total for row in valid_sales)
+            ),
+            "ganancia_antes_devoluciones": _money(
+                sum(row.ganancia for row in valid_sales)
+            ),
+        },
+        "ventas": [
+            _serialize_sale(session, row, True)
+            for row in sales
+        ],
+        "devoluciones": return_rows,
+        "movimientos_productos": product_movements,
+        "movimientos_efectivo": summary.get(
+            "movimientos_efectivo",
+            [],
+        ),
+    }
+
+
 def _day_bounds(report_date: date) -> Tuple[datetime, datetime]:
     return datetime.combine(report_date, time.min), datetime.combine(report_date, time.max)
 
@@ -2584,6 +2817,43 @@ def registrar_modulo_pos_fase3(
         row = _open_session(session, current_user)
         return {"abierta": row is not None, "sesion": _cash_summary(session, row) if row else None}
 
+    @app.get(
+        "/pos/v3/caja/sesiones/{session_id}/resumen"
+    )
+    def session_report_v3(
+        session_id: int,
+        session: Session = Depends(get_session),
+        current_user: Any = Depends(operator_user),
+    ):
+        row = session.get(POSSesionCaja, session_id)
+
+        if not row:
+            raise HTTPException(
+                status_code=404,
+                detail="Sesión de caja no encontrada.",
+            )
+
+        is_admin = _role(current_user) == "admin"
+        current_keys = {
+            _key(current_user),
+            _name(current_user),
+        }
+
+        if not is_admin and row.usuario not in current_keys:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Solo puedes consultar el resumen "
+                    "de tu propia caja."
+                ),
+            )
+
+        return _session_report(
+            session,
+            row,
+            Movimiento,
+        )
+
     @app.post("/pos/v3/caja/cerrar")
     def close_cash_v3(
         data: CerrarCajaV3Request,
@@ -2614,7 +2884,17 @@ def registrar_modulo_pos_fase3(
             now=now,
         )
         session.commit()
-        return {"mensaje": "Caja cerrada.", "sesion": _cash_summary(session, row)}
+        session.refresh(row)
+
+        return {
+            "mensaje": "Caja cerrada.",
+            "sesion": _cash_summary(session, row),
+            "resumen_turno": _session_report(
+                session,
+                row,
+                Movimiento,
+            ),
+        }
 
     # -------------------- CANCELACIONES / DEVOLUCIONES V3 --------------------
 
@@ -2802,6 +3082,40 @@ def registrar_modulo_pos_fase3(
                 )
                 new_returned = item["returned_before"] + item["inventory_amount"]
                 _update_movement_net(session, Movimiento, detail, new_returned)
+
+                movement_location = (
+                    f"{product.rack}-{product.nivel}-{product.slot}"
+                    if product
+                    else "Sin ubicación registrada"
+                )
+
+                session.add(
+                    Movimiento(
+                        accion="Devolución",
+                        sku=detail.sku,
+                        producto=detail.nombre,
+                        cantidad=item["inventory_amount"],
+                        ubicacion=movement_location,
+                        usuario=_name(current_user),
+                        fecha=now,
+                        costo_proveedor=_money(
+                            detail.costo_unitario
+                        ),
+                        precio_venta=_money(
+                            detail.precio_unitario_final
+                        ),
+                        ingreso_total=-_money(
+                            item["line_total"]
+                        ),
+                        costo_total=-_money(
+                            item["line_cost"]
+                        ),
+                        ganancia=-_money(
+                            item["line_total"]
+                            - item["line_cost"]
+                        ),
+                    )
+                )
             if credit and credit_adjustment > 0:
                 credit.saldo = _money(credit.saldo - credit_adjustment)
                 credit.total_credito = _money(max(credit.total_credito - credit_adjustment, 0))
