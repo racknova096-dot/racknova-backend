@@ -1585,6 +1585,312 @@ def _v4_safe_session_report(
         }
 
 
+
+# RACKNOVA_POS_V5_REPORTE_PROFESIONAL
+def _v5_number(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _v5_text(value: Any, fallback: str = "") -> str:
+    text_value = str(value or "").strip()
+    return text_value or fallback
+
+
+def _v5_sale_method(sale: Dict[str, Any]) -> str:
+    raw = _v5_text(
+        sale.get("metodo_pago")
+        or sale.get("forma_pago")
+        or sale.get("metodo")
+        or sale.get("tipo_pago")
+        or sale.get("payment_method"),
+        "Otro",
+    ).lower()
+
+    if "efect" in raw:
+        return "Efectivo"
+    if "tarjet" in raw or "card" in raw:
+        return "Tarjeta"
+    if "transfer" in raw:
+        return "Transferencia"
+    if "crédit" in raw or "credit" in raw:
+        return "Crédito"
+    return "Otro"
+
+
+def _v5_daily_report(
+    session: Session,
+    report_date: date,
+    Movimiento: Any,
+    cash_box: Optional[str] = None,
+    operator: Optional[str] = None,
+) -> Dict[str, Any]:
+    start, end = _day_bounds(report_date)
+
+    all_rows = list(
+        session.exec(
+            select(POSSesionCaja).where(
+                POSSesionCaja.fecha_apertura < end,
+                (POSSesionCaja.fecha_cierre == None)
+                | (POSSesionCaja.fecha_cierre >= start),
+            ).order_by(POSSesionCaja.fecha_apertura.asc())
+        ).all()
+    )
+
+    available_boxes = sorted(
+        {
+            _v5_text(row.caja_nombre)
+            for row in all_rows
+            if _v5_text(row.caja_nombre)
+        }
+    )
+    available_operators = sorted(
+        {
+            _v5_text(row.usuario)
+            for row in all_rows
+            if _v5_text(row.usuario)
+        }
+    )
+
+    normalized_box = _v5_text(cash_box)
+    normalized_operator = _v5_text(operator)
+
+    rows = [
+        row
+        for row in all_rows
+        if (
+            not normalized_box
+            or _v5_text(row.caja_nombre) == normalized_box
+        )
+        and (
+            not normalized_operator
+            or _v5_text(row.usuario) == normalized_operator
+        )
+    ]
+
+    reports = [
+        _v4_safe_session_report(session, row, Movimiento)
+        for row in rows
+    ]
+
+    totals = {
+        "ventas": 0.0,
+        "devoluciones": 0.0,
+        "ventas_netas": 0.0,
+        "numero_ventas": 0,
+        "ventas_canceladas": 0,
+        "numero_devoluciones": 0,
+        "descuentos": 0.0,
+        "costo": 0.0,
+        "ganancia": 0.0,
+        "fondo_inicial": 0.0,
+        "efectivo_esperado": 0.0,
+        "efectivo_contado": 0.0,
+        "diferencias": 0.0,
+    }
+    payment_methods: Dict[str, float] = {
+        "Efectivo": 0.0,
+        "Tarjeta": 0.0,
+        "Transferencia": 0.0,
+        "Crédito": 0.0,
+        "Otro": 0.0,
+    }
+    by_box: Dict[str, Dict[str, Any]] = {}
+    by_operator: Dict[str, Dict[str, Any]] = {}
+    products: Dict[tuple[str, str], Dict[str, Any]] = {}
+    returns: List[Dict[str, Any]] = []
+    cash_movements: List[Dict[str, Any]] = []
+
+    def grouping_row(container: Dict[str, Dict[str, Any]], key: str) -> Dict[str, Any]:
+        return container.setdefault(
+            key,
+            {
+                "nombre": key,
+                "sesiones": 0,
+                "ventas": 0.0,
+                "devoluciones": 0.0,
+                "venta_neta": 0.0,
+                "operaciones": 0,
+                "diferencia": 0.0,
+            },
+        )
+
+    for report in reports:
+        report_totals = report.get("totales") or {}
+        cash_session = report.get("sesion") or {}
+        box_name = _v5_text(cash_session.get("caja_nombre"), "Sin caja")
+        operator_name = _v5_text(cash_session.get("usuario"), "Sin operador")
+
+        totals["ventas"] += _v5_number(report_totals.get("ventas"))
+        totals["devoluciones"] += _v5_number(report_totals.get("devoluciones"))
+        totals["ventas_netas"] += _v5_number(report_totals.get("ventas_netas"))
+        totals["numero_ventas"] += int(report_totals.get("numero_ventas") or 0)
+        totals["ventas_canceladas"] += int(report_totals.get("ventas_canceladas") or 0)
+        totals["numero_devoluciones"] += int(report_totals.get("numero_devoluciones") or 0)
+        totals["descuentos"] += _v5_number(report_totals.get("descuentos"))
+        totals["costo"] += _v5_number(report_totals.get("costo"))
+        totals["ganancia"] += _v5_number(
+            report_totals.get("ganancia_antes_devoluciones")
+        )
+        totals["fondo_inicial"] += _v5_number(cash_session.get("fondo_inicial"))
+        totals["efectivo_esperado"] += _v5_number(cash_session.get("efectivo_esperado"))
+        totals["efectivo_contado"] += _v5_number(cash_session.get("efectivo_contado"))
+        totals["diferencias"] += _v5_number(cash_session.get("diferencia"))
+
+        box_row = grouping_row(by_box, box_name)
+        operator_row = grouping_row(by_operator, operator_name)
+        for target in (box_row, operator_row):
+            target["sesiones"] += 1
+            target["ventas"] += _v5_number(report_totals.get("ventas"))
+            target["devoluciones"] += _v5_number(report_totals.get("devoluciones"))
+            target["venta_neta"] += _v5_number(report_totals.get("ventas_netas"))
+            target["operaciones"] += int(report_totals.get("numero_ventas") or 0)
+            target["diferencia"] += _v5_number(cash_session.get("diferencia"))
+
+        session_method_values = {
+            "Efectivo": _v5_number(cash_session.get("efectivo_ventas")),
+            "Tarjeta": _v5_number(cash_session.get("tarjeta")),
+            "Transferencia": _v5_number(cash_session.get("transferencia")),
+            "Crédito": _v5_number(
+                cash_session.get("credito")
+                or cash_session.get("ventas_credito")
+            ),
+        }
+
+        identified = sum(session_method_values.values())
+        if identified > 0:
+            for method_name, amount in session_method_values.items():
+                payment_methods[method_name] += amount
+            payment_methods["Otro"] += max(
+                _v5_number(report_totals.get("ventas")) - identified,
+                0,
+            )
+        else:
+            for sale in report.get("ventas") or []:
+                if _v5_text(sale.get("estado")).upper() == "CANCELADA":
+                    continue
+                method_name = _v5_sale_method(sale)
+                payment_methods[method_name] += _v5_number(
+                    sale.get("total")
+                    or sale.get("total_venta")
+                    or sale.get("monto")
+                )
+
+        for movement in report.get("movimientos_productos") or []:
+            sku = _v5_text(movement.get("sku"), "SIN-SKU")
+            unit = _v5_text(movement.get("unidad_venta"), "pieza")
+            key = (sku, unit)
+            item = products.setdefault(
+                key,
+                {
+                    "sku": sku,
+                    "nombre": _v5_text(movement.get("nombre"), "Producto"),
+                    "unidad": unit,
+                    "cantidad_vendida": 0.0,
+                    "cantidad_devuelta": 0.0,
+                    "cantidad_neta": 0.0,
+                    "ingreso_neto": 0.0,
+                },
+            )
+            item["cantidad_vendida"] += _v5_number(movement.get("cantidad_vendida"))
+            item["cantidad_devuelta"] += _v5_number(movement.get("cantidad_devuelta"))
+            item["cantidad_neta"] += _v5_number(movement.get("cantidad_neta"))
+            item["ingreso_neto"] += _v5_number(movement.get("ingreso_neto"))
+
+        for return_item in report.get("devoluciones") or []:
+            returns.append(
+                {
+                    **return_item,
+                    "caja": box_name,
+                    "operador_caja": operator_name,
+                    "id_sesion": cash_session.get("id_sesion"),
+                }
+            )
+
+        for cash_movement in report.get("movimientos_efectivo") or []:
+            cash_movements.append(
+                {
+                    **cash_movement,
+                    "caja": box_name,
+                    "operador_caja": operator_name,
+                    "id_sesion": cash_session.get("id_sesion"),
+                }
+            )
+
+    for value in totals:
+        if value not in {
+            "numero_ventas",
+            "ventas_canceladas",
+            "numero_devoluciones",
+        }:
+            totals[value] = _money(totals[value])
+
+    for collection in (by_box, by_operator):
+        for item in collection.values():
+            for key in ("ventas", "devoluciones", "venta_neta", "diferencia"):
+                item[key] = _money(item[key])
+
+    product_rows = []
+    for item in products.values():
+        for key in (
+            "cantidad_vendida",
+            "cantidad_devuelta",
+            "cantidad_neta",
+        ):
+            item[key] = _qty(item[key])
+        item["ingreso_neto"] = _money(item["ingreso_neto"])
+        product_rows.append(item)
+
+    product_rows.sort(
+        key=lambda item: (
+            -_v5_number(item.get("ingreso_neto")),
+            _v5_text(item.get("nombre")),
+        )
+    )
+
+    payment_rows = [
+        {"metodo": name, "monto": _money(amount)}
+        for name, amount in payment_methods.items()
+        if abs(amount) > 0.0001
+    ]
+
+    margin = (
+        (totals["ganancia"] / totals["ventas_netas"] * 100)
+        if totals["ventas_netas"]
+        else 0
+    )
+    totals["margen_porcentaje"] = round(margin, 2)
+
+    return {
+        "fecha": report_date.isoformat(),
+        "generado_en": datetime.now(),
+        "filtros": {
+            "caja": normalized_box or None,
+            "operador": normalized_operator or None,
+        },
+        "catalogos": {
+            "cajas": available_boxes,
+            "operadores": available_operators,
+        },
+        "totales": totals,
+        "metodos_pago": payment_rows,
+        "cajas": sorted(by_box.values(), key=lambda item: item["nombre"]),
+        "operadores": sorted(by_operator.values(), key=lambda item: item["nombre"]),
+        "productos": product_rows,
+        "devoluciones": sorted(
+            returns,
+            key=lambda item: _v5_text(item.get("fecha")),
+        ),
+        "movimientos_efectivo": sorted(
+            cash_movements,
+            key=lambda item: _v5_text(item.get("fecha")),
+        ),
+        "sesiones": reports,
+    }
+
+
 def _day_bounds(report_date: date) -> Tuple[datetime, datetime]:
     return datetime.combine(report_date, time.min), datetime.combine(report_date, time.max)
 
@@ -3879,4 +4185,33 @@ def registrar_modulo_pos_fase3(
         session.delete(row)
         session.commit()
         return {"mensaje": "Promoción eliminada definitivamente."}
+
+    # ==========================================================
+    # RACKNOVA POS V5: REPORTE DIARIO DETALLADO
+    # ==========================================================
+
+    @app.get("/pos/v5/reportes/diario")
+    def daily_report_v5(
+        fecha: str,
+        caja: Optional[str] = None,
+        operador: Optional[str] = None,
+        session: Session = Depends(get_session),
+        current_user: Any = Depends(admin_user),
+    ):
+        try:
+            report_date = date.fromisoformat(fecha)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Fecha inválida. Usa YYYY-MM-DD.",
+            ) from exc
+
+        return _v5_daily_report(
+            session,
+            report_date,
+            Movimiento,
+            caja,
+            operador,
+        )
+
 
