@@ -1891,6 +1891,475 @@ def _v5_daily_report(
     }
 
 
+
+# ==========================================================
+# RACKNOVA_MULTIEMPRESA_FASE1
+# Base multiempresa: empresas, membresías y contexto seguro.
+# ==========================================================
+MULTIEMPRESA_DEFAULT_ID = "11111111-1111-4111-8111-111111111111"
+
+
+def _multi_user_keys(current_user: Any) -> List[str]:
+    values: List[str] = []
+    for value in (
+        _key(current_user),
+        _name(current_user),
+        getattr(current_user, "email", None),
+        getattr(current_user, "username", None),
+        getattr(current_user, "id", None),
+        getattr(current_user, "id_usuario", None),
+    ):
+        normalized = str(value or "").strip()
+        if normalized and normalized not in values:
+            values.append(normalized)
+    return values
+
+
+def _multi_primary_user_key(current_user: Any) -> str:
+    keys = _multi_user_keys(current_user)
+    if not keys:
+        raise HTTPException(
+            status_code=401,
+            detail="No se pudo identificar al usuario autenticado.",
+        )
+    return keys[0]
+
+
+def _multi_normalize_role(current_user: Any, owner_for_admin: bool = False) -> str:
+    role = str(_role(current_user) or "viewer").strip().lower()
+    if role == "admin" and owner_for_admin:
+        return "owner"
+    if role in {"owner", "admin", "operator", "viewer"}:
+        return role
+    return "viewer"
+
+
+def _multi_slug(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    result: List[str] = []
+    dash = False
+    for char in raw:
+        if char.isalnum():
+            result.append(char)
+            dash = False
+        elif result and not dash:
+            result.append("-")
+            dash = True
+    return "".join(result).strip("-")[:120]
+
+
+def _multi_ensure_schema(session: Session) -> None:
+    # Esquema mínimo de respaldo. La migración SQL de Supabase sigue siendo
+    # la vía recomendada porque además tenantiza las tablas existentes.
+    session.connection().execute(
+        sa_text(
+            """
+            CREATE TABLE IF NOT EXISTS empresas (
+                id_empresa UUID PRIMARY KEY,
+                nombre VARCHAR(150) NOT NULL,
+                slug VARCHAR(120) NOT NULL UNIQUE,
+                activo BOOLEAN NOT NULL DEFAULT TRUE,
+                plan VARCHAR(30) NOT NULL DEFAULT 'basic',
+                moneda VARCHAR(10) NOT NULL DEFAULT 'MXN',
+                zona_horaria VARCHAR(80) NOT NULL DEFAULT 'America/Mexico_City',
+                rfc VARCHAR(20),
+                razon_social VARCHAR(255),
+                logo_url TEXT,
+                proveedor_facturacion VARCHAR(50),
+                proveedor_organizacion_id VARCHAR(255),
+                creado_en TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                actualizado_en TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+    )
+    session.connection().execute(
+        sa_text(
+            """
+            CREATE TABLE IF NOT EXISTS empresa_usuarios (
+                id_membresia UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                id_empresa UUID NOT NULL REFERENCES empresas(id_empresa) ON DELETE CASCADE,
+                usuario_key VARCHAR(255) NOT NULL,
+                nombre_usuario VARCHAR(255),
+                rol VARCHAR(30) NOT NULL DEFAULT 'viewer',
+                activo BOOLEAN NOT NULL DEFAULT TRUE,
+                creado_en TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                actualizado_en TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (id_empresa, usuario_key)
+            )
+            """
+        )
+    )
+    session.connection().execute(
+        sa_text(
+            """
+            INSERT INTO empresas (
+                id_empresa, nombre, slug, activo, plan, moneda, zona_horaria
+            ) VALUES (
+                CAST(:id AS UUID),
+                'RackNova Principal',
+                'racknova-principal',
+                TRUE,
+                'legacy',
+                'MXN',
+                'America/Mexico_City'
+            )
+            ON CONFLICT (id_empresa) DO NOTHING
+            """
+        ),
+        {"id": MULTIEMPRESA_DEFAULT_ID},
+    )
+    session.commit()
+
+
+def _multi_ensure_legacy_membership(
+    session: Session,
+    current_user: Any,
+) -> None:
+    _multi_ensure_schema(session)
+    keys = _multi_user_keys(current_user)
+    if not keys:
+        return
+
+    existing = session.connection().execute(
+        sa_text(
+            """
+            SELECT 1
+            FROM empresa_usuarios
+            WHERE usuario_key = ANY(:keys)
+              AND activo = TRUE
+            LIMIT 1
+            """
+        ),
+        {"keys": keys},
+    ).first()
+    if existing:
+        return
+
+    primary = keys[0]
+    session.connection().execute(
+        sa_text(
+            """
+            INSERT INTO empresa_usuarios (
+                id_empresa,
+                usuario_key,
+                nombre_usuario,
+                rol,
+                activo
+            ) VALUES (
+                CAST(:empresa AS UUID),
+                :usuario,
+                :nombre,
+                :rol,
+                TRUE
+            )
+            ON CONFLICT (id_empresa, usuario_key) DO NOTHING
+            """
+        ),
+        {
+            "empresa": MULTIEMPRESA_DEFAULT_ID,
+            "usuario": primary,
+            "nombre": str(_name(current_user) or primary),
+            "rol": _multi_normalize_role(current_user, owner_for_admin=True),
+        },
+    )
+    session.commit()
+
+
+def _multi_memberships(
+    session: Session,
+    current_user: Any,
+) -> List[Dict[str, Any]]:
+    _multi_ensure_legacy_membership(session, current_user)
+    keys = _multi_user_keys(current_user)
+    rows = session.connection().execute(
+        sa_text(
+            """
+            SELECT
+                e.id_empresa,
+                e.nombre,
+                e.slug,
+                e.activo,
+                e.plan,
+                e.moneda,
+                e.zona_horaria,
+                eu.rol,
+                eu.usuario_key
+            FROM empresa_usuarios eu
+            JOIN empresas e ON e.id_empresa = eu.id_empresa
+            WHERE eu.usuario_key = ANY(:keys)
+              AND eu.activo = TRUE
+              AND e.activo = TRUE
+            ORDER BY
+                CASE WHEN e.id_empresa = CAST(:principal AS UUID) THEN 0 ELSE 1 END,
+                e.nombre
+            """
+        ),
+        {"keys": keys, "principal": MULTIEMPRESA_DEFAULT_ID},
+    ).mappings().all()
+    return [dict(row) for row in rows]
+
+
+def _multi_empresa_context(
+    session: Session,
+    current_user: Any,
+    empresa_id: Optional[str] = None,
+    allowed_roles: Optional[set[str]] = None,
+) -> Dict[str, Any]:
+    memberships = _multi_memberships(session, current_user)
+    if not memberships:
+        raise HTTPException(
+            status_code=403,
+            detail="El usuario no pertenece a ninguna empresa activa.",
+        )
+
+    requested = str(empresa_id or "").strip()
+    selected: Optional[Dict[str, Any]] = None
+
+    if requested:
+        for row in memberships:
+            if str(row.get("id_empresa")) == requested:
+                selected = row
+                break
+        if selected is None:
+            raise HTTPException(
+                status_code=403,
+                detail="No tienes acceso a la empresa solicitada.",
+            )
+    else:
+        selected = memberships[0]
+
+    role = str(selected.get("rol") or "viewer").lower()
+    if allowed_roles and role not in allowed_roles:
+        raise HTTPException(
+            status_code=403,
+            detail="Tu rol no permite realizar esta acción en esta empresa.",
+        )
+
+    return selected
+
+
+def _multi_create_company(
+    session: Session,
+    current_user: Any,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    _multi_ensure_legacy_membership(session, current_user)
+
+    name = str(payload.get("nombre") or "").strip()
+    if len(name) < 2:
+        raise HTTPException(status_code=400, detail="Escribe el nombre de la empresa.")
+
+    slug = _multi_slug(payload.get("slug") or name)
+    if not slug:
+        raise HTTPException(status_code=400, detail="No se pudo generar el identificador de empresa.")
+
+    exists = session.connection().execute(
+        sa_text("SELECT 1 FROM empresas WHERE slug = :slug LIMIT 1"),
+        {"slug": slug},
+    ).first()
+    if exists:
+        raise HTTPException(status_code=409, detail="Ya existe una empresa con ese identificador.")
+
+    row = session.connection().execute(
+        sa_text(
+            """
+            INSERT INTO empresas (
+                id_empresa,
+                nombre,
+                slug,
+                activo,
+                plan,
+                moneda,
+                zona_horaria
+            ) VALUES (
+                gen_random_uuid(),
+                :nombre,
+                :slug,
+                TRUE,
+                :plan,
+                :moneda,
+                :zona_horaria
+            )
+            RETURNING id_empresa, nombre, slug, activo, plan, moneda, zona_horaria
+            """
+        ),
+        {
+            "nombre": name,
+            "slug": slug,
+            "plan": str(payload.get("plan") or "basic").strip() or "basic",
+            "moneda": str(payload.get("moneda") or "MXN").strip() or "MXN",
+            "zona_horaria": str(
+                payload.get("zona_horaria") or "America/Mexico_City"
+            ).strip()
+            or "America/Mexico_City",
+        },
+    ).mappings().first()
+
+    user_key = _multi_primary_user_key(current_user)
+    session.connection().execute(
+        sa_text(
+            """
+            INSERT INTO empresa_usuarios (
+                id_empresa,
+                usuario_key,
+                nombre_usuario,
+                rol,
+                activo
+            ) VALUES (
+                CAST(:empresa AS UUID),
+                :usuario,
+                :nombre,
+                'owner',
+                TRUE
+            )
+            ON CONFLICT (id_empresa, usuario_key)
+            DO UPDATE SET rol = 'owner', activo = TRUE, actualizado_en = NOW()
+            """
+        ),
+        {
+            "empresa": str(row["id_empresa"]),
+            "usuario": user_key,
+            "nombre": str(_name(current_user) or user_key),
+        },
+    )
+    session.commit()
+    return dict(row)
+
+
+def _multi_add_member(
+    session: Session,
+    current_user: Any,
+    empresa_id: str,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    _multi_empresa_context(
+        session,
+        current_user,
+        empresa_id,
+        {"owner", "admin"},
+    )
+
+    usuario_key = str(
+        payload.get("usuario_key")
+        or payload.get("email")
+        or payload.get("usuario")
+        or ""
+    ).strip()
+    if not usuario_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Indica usuario_key o email del usuario.",
+        )
+
+    role = str(payload.get("rol") or "viewer").strip().lower()
+    if role not in {"admin", "operator", "viewer"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Rol inválido. Usa admin, operator o viewer.",
+        )
+
+    session.connection().execute(
+        sa_text(
+            """
+            INSERT INTO empresa_usuarios (
+                id_empresa,
+                usuario_key,
+                nombre_usuario,
+                rol,
+                activo
+            ) VALUES (
+                CAST(:empresa AS UUID),
+                :usuario,
+                :nombre,
+                :rol,
+                TRUE
+            )
+            ON CONFLICT (id_empresa, usuario_key)
+            DO UPDATE SET
+                nombre_usuario = EXCLUDED.nombre_usuario,
+                rol = EXCLUDED.rol,
+                activo = TRUE,
+                actualizado_en = NOW()
+            """
+        ),
+        {
+            "empresa": empresa_id,
+            "usuario": usuario_key,
+            "nombre": str(payload.get("nombre_usuario") or usuario_key),
+            "rol": role,
+        },
+    )
+    session.commit()
+    return {
+        "id_empresa": empresa_id,
+        "usuario_key": usuario_key,
+        "rol": role,
+        "activo": True,
+    }
+
+
+def _multi_diagnostic(session: Session) -> Dict[str, Any]:
+    _multi_ensure_schema(session)
+    company_count = session.connection().execute(
+        sa_text("SELECT COUNT(*) FROM empresas")
+    ).scalar_one()
+    membership_count = session.connection().execute(
+        sa_text("SELECT COUNT(*) FROM empresa_usuarios")
+    ).scalar_one()
+
+    tables = session.connection().execute(
+        sa_text(
+            """
+            SELECT
+                t.table_name,
+                EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns c
+                    WHERE c.table_schema = t.table_schema
+                      AND c.table_name = t.table_name
+                      AND c.column_name = 'empresa_id'
+                ) AS tiene_empresa_id
+            FROM information_schema.tables t
+            WHERE t.table_schema = 'public'
+              AND t.table_type = 'BASE TABLE'
+            ORDER BY t.table_name
+            """
+        )
+    ).mappings().all()
+
+    tenant_candidates: List[Dict[str, Any]] = []
+    prefixes = (
+        "pos_", "producto", "inventario", "movimiento", "venta",
+        "cliente", "credito", "crédito", "abono", "cotizacion",
+        "cotización", "catalogo", "catálogo", "ubicacion", "ubicación",
+        "rack", "alerta",
+    )
+    for row in tables:
+        name = str(row["table_name"])
+        if name.startswith(prefixes):
+            tenant_candidates.append(dict(row))
+
+    missing = [
+        row["table_name"]
+        for row in tenant_candidates
+        if not bool(row["tiene_empresa_id"])
+    ]
+
+    return {
+        "fase": 1,
+        "empresa_principal": MULTIEMPRESA_DEFAULT_ID,
+        "empresas": int(company_count),
+        "membresias": int(membership_count),
+        "tablas_comerciales_detectadas": tenant_candidates,
+        "tablas_pendientes_empresa_id": missing,
+        "selector_dashboard_habilitado": False,
+        "motivo_selector_deshabilitado": (
+            "Se habilitará cuando los módulos operativos filtren por empresa."
+        ),
+    }
+
+
 def _day_bounds(report_date: date) -> Tuple[datetime, datetime]:
     return datetime.combine(report_date, time.min), datetime.combine(report_date, time.max)
 
@@ -4213,5 +4682,70 @@ def registrar_modulo_pos_fase3(
             caja,
             operador,
         )
+
+    # ==========================================================
+    # RACKNOVA_MULTIEMPRESA_FASE1 - API DE EMPRESAS
+    # ==========================================================
+
+    @app.get("/multiempresa/mis-empresas")
+    def multiempresa_my_companies_f1(
+        session: Session = Depends(get_session),
+        current_user: Any = Depends(operator_user),
+    ):
+        return {
+            "empresas": _multi_memberships(session, current_user),
+            "empresa_principal": MULTIEMPRESA_DEFAULT_ID,
+            "selector_habilitado": False,
+        }
+
+    @app.get("/multiempresa/contexto")
+    def multiempresa_context_f1(
+        empresa_id: Optional[str] = None,
+        session: Session = Depends(get_session),
+        current_user: Any = Depends(operator_user),
+    ):
+        return _multi_empresa_context(
+            session,
+            current_user,
+            empresa_id,
+        )
+
+    @app.post("/multiempresa/empresas")
+    def multiempresa_create_company_f1(
+        payload: Dict[str, Any],
+        session: Session = Depends(get_session),
+        current_user: Any = Depends(admin_user),
+    ):
+        company = _multi_create_company(session, current_user, payload)
+        return {
+            "mensaje": "Empresa creada. Todavía no se habilita el cambio de empresa hasta completar la tenantización de módulos.",
+            "empresa": company,
+        }
+
+    @app.post("/multiempresa/empresas/{empresa_id}/usuarios")
+    def multiempresa_add_user_f1(
+        empresa_id: str,
+        payload: Dict[str, Any],
+        session: Session = Depends(get_session),
+        current_user: Any = Depends(admin_user),
+    ):
+        membership = _multi_add_member(
+            session,
+            current_user,
+            empresa_id,
+            payload,
+        )
+        return {
+            "mensaje": "Usuario vinculado a la empresa.",
+            "membresia": membership,
+        }
+
+    @app.get("/multiempresa/diagnostico")
+    def multiempresa_diagnostic_f1(
+        session: Session = Depends(get_session),
+        current_user: Any = Depends(admin_user),
+    ):
+        return _multi_diagnostic(session)
+
 
 
