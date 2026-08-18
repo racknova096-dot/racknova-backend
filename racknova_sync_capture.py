@@ -11,8 +11,10 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
+from sqlalchemy import event
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import text as sa_text
+from sqlalchemy.orm import Session as SASession
 from sqlmodel import Session
 
 import multiempresa_tenant as rn_tenant
@@ -252,6 +254,62 @@ def _walk_mapped(value: Any, found: dict[int, Any], depth: int = 0) -> None:
             _walk_mapped(item, found, depth + 1)
 
 
+
+# ============================================================
+# B2A FIX — tracker de objetos realmente modificados
+# ============================================================
+_TOUCHED_KEY = "racknova_sync_touched_objects"
+_TRACKER_INSTALLED = False
+
+
+def _tracked_objects(session: Session) -> dict[int, Any]:
+    bucket = session.info.setdefault(_TOUCHED_KEY, {})
+    if not isinstance(bucket, dict):
+        bucket = {}
+        session.info[_TOUCHED_KEY] = bucket
+    return bucket
+
+
+def _install_transaction_tracker() -> None:
+    global _TRACKER_INSTALLED
+    if _TRACKER_INSTALLED:
+        return
+    _TRACKER_INSTALLED = True
+
+    @event.listens_for(SASession, "before_flush")
+    def _racknova_track_before_flush(
+        session: SASession,
+        flush_context: Any,
+        instances: Any,
+    ) -> None:
+        bucket = session.info.setdefault(_TOUCHED_KEY, {})
+        if not isinstance(bucket, dict):
+            bucket = {}
+            session.info[_TOUCHED_KEY] = bucket
+
+        for obj in list(session.new) + list(session.dirty) + list(session.deleted):
+            if _is_commercial_object(obj):
+                bucket[id(obj)] = obj
+
+    @event.listens_for(SASession, "after_commit")
+    def _racknova_track_after_commit(session: SASession) -> None:
+        session.info.pop(_TOUCHED_KEY, None)
+
+    @event.listens_for(SASession, "after_rollback")
+    def _racknova_track_after_rollback(session: SASession) -> None:
+        session.info.pop(_TOUCHED_KEY, None)
+
+    @event.listens_for(SASession, "after_soft_rollback")
+    def _racknova_track_after_soft_rollback(
+        session: SASession,
+        previous_transaction: Any,
+    ) -> None:
+        session.info.pop(_TOUCHED_KEY, None)
+
+
+_install_transaction_tracker()
+
+
 def _safe_context(local_vars: dict[str, Any]) -> dict[str, Any]:
     """
     Guarda únicamente identificadores/primitivos útiles. Los objetos ORM
@@ -393,41 +451,24 @@ def _upsert_node_without_commit(
         return None
 
 
+
 def capture_operation_event(
     session: Session,
     *,
     event_type: str,
     local_vars: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """
-    Se llama INMEDIATAMENTE ANTES del commit comercial.
-
-    1. captura objetos nuevos/sucios/borrados;
-    2. hace flush, NO commit;
-    3. obtiene PK/sync_uuid;
-    4. inserta el evento outbox en la MISMA transacción;
-    5. devuelve al caller, que realiza el commit original.
-    """
     local_vars = dict(local_vars or {})
     empresa_id = rn_tenant.current_empresa_id(session)
     config = load_runtime_config()
 
-    mapped: dict[int, Any] = {}
-
-    # Cambios todavía pendientes.
-    for obj in list(session.new) + list(session.dirty) + list(session.deleted):
-        if _is_commercial_object(obj):
-            mapped[id(obj)] = obj
-
-    # Objetos que ya fueron flushados antes dentro de la misma ruta.
-    for value in local_vars.values():
-        _walk_mapped(value, mapped)
-
-    # Fundamental: asigna PKs y defaults de DB antes de consultar sync_uuid.
+    # Este flush dispara el tracker para cambios aún pendientes.
     session.flush()
 
+    tracked = dict(_tracked_objects(session))
+
     records: list[dict[str, Any]] = []
-    for obj in list(mapped.values())[:250]:
+    for obj in list(tracked.values())[:250]:
         record = _serialize_record(
             session,
             obj=obj,
@@ -461,7 +502,7 @@ def capture_operation_event(
     )
 
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "event_type": event_type,
         "runtime_mode": config.mode,
         "node_code": config.node_code,
@@ -469,7 +510,7 @@ def capture_operation_event(
         "context": context,
         "records": records,
         "record_count": len(records),
-        "capture": "transactional-before-commit",
+        "capture": "transaction-tracker-before-commit",
     }
 
     return enqueue_outbox_event(
