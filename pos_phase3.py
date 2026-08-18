@@ -1,4 +1,8 @@
 from __future__ import annotations
+from uuid import UUID
+from fastapi import Header
+from multiempresa_tenant import bind_empresa as _rn_bind_empresa
+import multiempresa_tenant as rn_tenant
 
 import io
 import json
@@ -42,6 +46,8 @@ except ImportError as exc:  # pragma: no cover - mensaje útil durante despliegu
 
 class POSCliente(SQLModel, table=True):
     __tablename__ = "pos_cliente"
+    # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST_MODEL
+    empresa_id: UUID | None = Field(default=None, nullable=False, index=True)
 
     id_cliente: Optional[int] = Field(default=None, primary_key=True)
     nombre: str = Field(index=True)
@@ -59,6 +65,8 @@ class POSCliente(SQLModel, table=True):
 
 class POSProductoConfiguracion(SQLModel, table=True):
     __tablename__ = "pos_producto_configuracion"
+    # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST_MODEL
+    empresa_id: UUID | None = Field(default=None, nullable=False, index=True)
 
     id_configuracion: Optional[int] = Field(default=None, primary_key=True)
     sku: str = Field(index=True)
@@ -78,6 +86,8 @@ class POSProductoConfiguracion(SQLModel, table=True):
 
 class POSPrecioCliente(SQLModel, table=True):
     __tablename__ = "pos_precio_cliente"
+    # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST_MODEL
+    empresa_id: UUID | None = Field(default=None, nullable=False, index=True)
 
     id_precio: Optional[int] = Field(default=None, primary_key=True)
     id_cliente: int = Field(index=True)
@@ -90,6 +100,8 @@ class POSPrecioCliente(SQLModel, table=True):
 
 class POSPromocion(SQLModel, table=True):
     __tablename__ = "pos_promocion"
+    # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST_MODEL
+    empresa_id: UUID | None = Field(default=None, nullable=False, index=True)
 
     id_promocion: Optional[int] = Field(default=None, primary_key=True)
     nombre: str
@@ -110,6 +122,8 @@ class POSPromocion(SQLModel, table=True):
 
 class POSVentaExtra(SQLModel, table=True):
     __tablename__ = "pos_venta_extra"
+    # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST_MODEL
+    empresa_id: UUID | None = Field(default=None, nullable=False, index=True)
 
     id_extra: Optional[int] = Field(default=None, primary_key=True)
     id_venta: int = Field(index=True)
@@ -126,6 +140,8 @@ class POSVentaExtra(SQLModel, table=True):
 
 class POSVentaDetalleExtra(SQLModel, table=True):
     __tablename__ = "pos_venta_detalle_extra"
+    # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST_MODEL
+    empresa_id: UUID | None = Field(default=None, nullable=False, index=True)
 
     id_extra_detalle: Optional[int] = Field(default=None, primary_key=True)
     id_detalle: int = Field(index=True)
@@ -141,6 +157,8 @@ class POSVentaDetalleExtra(SQLModel, table=True):
 
 class POSCredito(SQLModel, table=True):
     __tablename__ = "pos_credito"
+    # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST_MODEL
+    empresa_id: UUID | None = Field(default=None, nullable=False, index=True)
 
     id_credito: Optional[int] = Field(default=None, primary_key=True)
     id_venta: int = Field(index=True)
@@ -156,6 +174,8 @@ class POSCredito(SQLModel, table=True):
 
 class POSAbono(SQLModel, table=True):
     __tablename__ = "pos_abono"
+    # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST_MODEL
+    empresa_id: UUID | None = Field(default=None, nullable=False, index=True)
 
     id_abono: Optional[int] = Field(default=None, primary_key=True)
     folio: str = Field(index=True)
@@ -171,6 +191,8 @@ class POSAbono(SQLModel, table=True):
 
 class POSDevolucionExtra(SQLModel, table=True):
     __tablename__ = "pos_devolucion_extra"
+    # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST_MODEL
+    empresa_id: UUID | None = Field(default=None, nullable=False, index=True)
 
     id_extra: Optional[int] = Field(default=None, primary_key=True)
     id_devolucion: int = Field(index=True)
@@ -180,6 +202,8 @@ class POSDevolucionExtra(SQLModel, table=True):
 
 class POSReporteDiario(SQLModel, table=True):
     __tablename__ = "pos_reporte_diario"
+    # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST_MODEL
+    empresa_id: UUID | None = Field(default=None, nullable=False, index=True)
 
     id_reporte: Optional[int] = Field(default=None, primary_key=True)
     fecha_reporte: date = Field(index=True)
@@ -191,6 +215,8 @@ class POSReporteDiario(SQLModel, table=True):
 
 class POSAuditoria(SQLModel, table=True):
     __tablename__ = "pos_auditoria"
+    # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST_MODEL
+    empresa_id: UUID | None = Field(default=None, nullable=False, index=True)
 
     id_auditoria: Optional[int] = Field(default=None, primary_key=True)
     accion: str = Field(index=True)
@@ -422,7 +448,7 @@ def _key(current_user: Any) -> str:
 
 
 def _role(current_user: Any) -> str:
-    return str(getattr(current_user, "rol", "operator") or "operator").lower()
+    return str(getattr(current_user, "_racknova_empresa_role", None) or getattr(current_user, "rol", "operator") or "operator").lower()
 
 
 def _folio(prefix: str, now: datetime) -> str:
@@ -1391,7 +1417,8 @@ def _v4_wholesale_price(
             """
             SELECT *
             FROM pos_mayoreo_menudeo
-            WHERE sku = :sku
+            WHERE empresa_id = CAST(:empresa AS UUID)
+              AND sku = :sku
               AND activo = TRUE
               AND unidad IN ('kg', 'litro')
               AND (fecha_inicio IS NULL OR fecha_inicio <= CURRENT_TIMESTAMP)
@@ -1399,7 +1426,7 @@ def _v4_wholesale_price(
             LIMIT 1
             """
         ),
-        {"sku": sku},
+        {"sku": sku, "empresa": str(session.info.get("racknova_empresa_id") or "11111111-1111-4111-8111-111111111111")},
     ).mappings().first()
 
     normalized_unit = str(unit or "").strip().lower()
@@ -1439,26 +1466,25 @@ def _v4_ensure_fixed_box(
     session: Session,
     box_number: int,
 ) -> Dict[str, Any]:
-    if box_number not in {1, 2}:
-        raise HTTPException(
-            status_code=400,
-            detail="Solo existen Caja 1 y Caja 2.",
-        )
+    if int(box_number or 0) <= 0:
+        raise HTTPException(status_code=400, detail="Identificador de caja inválido.")
 
-    name = f"Caja {box_number}"
     box_model = globals().get("POSCaja")
-
     if box_model is None:
-        return {"id_caja": box_number, "nombre": name}
+        return {"id_caja": int(box_number), "nombre": f"Caja {int(box_number)}"}
 
-    name_field = _v4_pk_name(
-        box_model,
-        ["nombre", "caja_nombre", "name"],
-    )
     pk_field = _v4_pk_name(box_model, ["id_caja", "id"])
-    box = None
+    name_field = _v4_pk_name(box_model, ["nombre", "caja_nombre", "name"])
 
-    if name_field:
+    box = None
+    if pk_field:
+        try:
+            box = session.get(box_model, int(box_number))
+        except Exception:
+            box = None
+
+    name = f"Caja {int(box_number)}"
+    if box is None and name_field:
         box = session.exec(
             select(box_model).where(getattr(box_model, name_field) == name)
         ).first()
@@ -1471,16 +1497,20 @@ def _v4_ensure_fixed_box(
             "activa": True,
             "activo": True,
             "estado": "DISPONIBLE",
-            "numero": box_number,
+            "numero": int(box_number),
         }
         box = box_model(**_v4_model_kwargs(box_model, values))
         session.add(box)
         session.commit()
         session.refresh(box)
 
+    resolved_name = str(
+        (getattr(box, name_field, None) if name_field else None)
+        or name
+    )
     return {
-        "id_caja": getattr(box, pk_field, box_number) if pk_field else box_number,
-        "nombre": name,
+        "id_caja": getattr(box, pk_field, int(box_number)) if pk_field else int(box_number),
+        "nombre": resolved_name,
     }
 
 
@@ -2144,6 +2174,7 @@ def _multi_create_company(
     current_user: Any,
     payload: Dict[str, Any],
 ) -> Dict[str, Any]:
+    rn_tenant.require_platform_superadmin(session, current_user)
     _multi_ensure_legacy_membership(session, current_user)
 
     name = str(payload.get("nombre") or "").strip()
@@ -2291,6 +2322,7 @@ def _multi_add_member(
         },
     )
     session.commit()
+    rn_tenant.raise_global_role_if_needed(session, usuario_key, role)
     return {
         "id_empresa": empresa_id,
         "usuario_key": usuario_key,
@@ -2796,7 +2828,9 @@ def registrar_modulo_pos_fase3(
         include_inactive: bool = Query(default=False),
         session: Session = Depends(get_session),
         current_user: Any = Depends(read_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner', 'viewer'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         statement = select(POSCliente).order_by(POSCliente.nombre.asc())
         if not include_inactive:
             statement = statement.where(POSCliente.activo == True)  # noqa: E712
@@ -2819,7 +2853,9 @@ def registrar_modulo_pos_fase3(
         data: ClienteRequest,
         session: Session = Depends(get_session),
         current_user: Any = Depends(operator_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         now = mexico_now()
         row = POSCliente(
             **{**_dump(data), "nombre": data.nombre.strip(), "telefono": data.telefono.strip() if data.telefono else None, "email": data.email.strip().lower() if data.email else None, "rfc": data.rfc.strip().upper() if data.rfc else None},
@@ -2847,7 +2883,9 @@ def registrar_modulo_pos_fase3(
         data: ClienteRequest,
         session: Session = Depends(get_session),
         current_user: Any = Depends(operator_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         row = session.get(POSCliente, client_id)
         if not row:
             raise HTTPException(status_code=404, detail="Cliente no encontrado.")
@@ -2877,7 +2915,9 @@ def registrar_modulo_pos_fase3(
         client_id: int,
         session: Session = Depends(get_session),
         current_user: Any = Depends(read_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner', 'viewer'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         row = session.get(POSCliente, client_id)
         if not row:
             raise HTTPException(status_code=404, detail="Cliente no encontrado.")
@@ -2927,7 +2967,9 @@ def registrar_modulo_pos_fase3(
         sku: str,
         session: Session = Depends(get_session),
         current_user: Any = Depends(read_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner', 'viewer'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         clean_sku = sku.strip()
         if not clean_sku:
             raise HTTPException(status_code=400, detail="SKU obligatorio.")
@@ -2947,7 +2989,9 @@ def registrar_modulo_pos_fase3(
         data: ProductoUnidadRequest,
         session: Session = Depends(get_session),
         current_user: Any = Depends(operator_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         clean_sku = sku.strip()
         if not clean_sku:
             raise HTTPException(status_code=400, detail="SKU obligatorio.")
@@ -3018,7 +3062,9 @@ def registrar_modulo_pos_fase3(
         query: str = Query(default="", max_length=100),
         session: Session = Depends(get_session),
         current_user: Any = Depends(read_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner', 'viewer'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         statement = select(POSProductoConfiguracion).order_by(
             POSProductoConfiguracion.sku.asc()
         )
@@ -3034,7 +3080,9 @@ def registrar_modulo_pos_fase3(
         data: ProductoConfigRequest,
         session: Session = Depends(get_session),
         current_user: Any = Depends(admin_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         product = session.exec(select(Producto).where(Producto.sku == sku)).first()
         if not product:
             raise HTTPException(status_code=404, detail="Producto no encontrado.")
@@ -3073,7 +3121,9 @@ def registrar_modulo_pos_fase3(
         data: PrecioClienteRequest,
         session: Session = Depends(get_session),
         current_user: Any = Depends(admin_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         _client(session, data.id_cliente)
         if not session.exec(select(Producto).where(Producto.sku == data.sku)).first():
             raise HTTPException(status_code=404, detail="Producto no encontrado.")
@@ -3110,7 +3160,9 @@ def registrar_modulo_pos_fase3(
         include_inactive: bool = Query(default=True),
         session: Session = Depends(get_session),
         current_user: Any = Depends(read_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner', 'viewer'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         statement = select(POSPromocion).order_by(
             POSPromocion.prioridad.desc(), POSPromocion.fecha_creacion.desc()
         )
@@ -3123,7 +3175,9 @@ def registrar_modulo_pos_fase3(
         data: PromocionRequest,
         session: Session = Depends(get_session),
         current_user: Any = Depends(admin_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         promo_type = data.tipo.strip().upper()
         if promo_type not in {"PORCENTAJE", "PRECIO_FIJO", "NXM"}:
             raise HTTPException(status_code=400, detail="Tipo de promoción inválido.")
@@ -3167,7 +3221,9 @@ def registrar_modulo_pos_fase3(
         data: PromocionRequest,
         session: Session = Depends(get_session),
         current_user: Any = Depends(admin_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         row = session.get(POSPromocion, promotion_id)
         if not row:
             raise HTTPException(status_code=404, detail="Promoción no encontrada.")
@@ -3197,7 +3253,9 @@ def registrar_modulo_pos_fase3(
         limite: int = Query(default=20, ge=1, le=50),
         session: Session = Depends(get_session),
         current_user: Any = Depends(operator_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         value = query.strip()
         exact = session.exec(
             select(Producto).where(
@@ -3288,7 +3346,9 @@ def registrar_modulo_pos_fase3(
         data: VentaV3Request,
         session: Session = Depends(get_session),
         current_user: Any = Depends(operator_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         client = _client(session, data.id_cliente)
         now = mexico_now()
         is_admin = _role(current_user) == "admin"
@@ -3320,7 +3380,9 @@ def registrar_modulo_pos_fase3(
         data: VentaV3Request,
         session: Session = Depends(get_session),
         current_user: Any = Depends(operator_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         cash_session = _require_open_session(session, current_user)
         existing = session.exec(
             select(POSVentaControl).where(POSVentaControl.operacion_id == data.operacion_id)
@@ -3669,7 +3731,9 @@ def registrar_modulo_pos_fase3(
         limite: int = Query(default=100, ge=1, le=500),
         session: Session = Depends(get_session),
         current_user: Any = Depends(read_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner', 'viewer'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         rows = session.exec(
             select(VentaPOS)
             .order_by(VentaPOS.fecha.desc())
@@ -3747,7 +3811,9 @@ def registrar_modulo_pos_fase3(
         sale_id: int,
         session: Session = Depends(get_session),
         current_user: Any = Depends(read_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner', 'viewer'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         row = session.get(VentaPOS, sale_id)
         if not row:
             raise HTTPException(status_code=404, detail="Venta no encontrada.")
@@ -3761,7 +3827,9 @@ def registrar_modulo_pos_fase3(
         client_id: Optional[int] = Query(default=None),
         session: Session = Depends(get_session),
         current_user: Any = Depends(read_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner', 'viewer'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         statement = select(POSCredito).order_by(
             POSCredito.fecha_vencimiento.asc()
         )
@@ -3820,7 +3888,9 @@ def registrar_modulo_pos_fase3(
         data: AbonoRequest,
         session: Session = Depends(get_session),
         current_user: Any = Depends(operator_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         credit = session.get(POSCredito, credit_id)
         if not credit or credit.estado in {"PAGADO", "CANCELADO"}:
             raise HTTPException(status_code=404, detail="Crédito no disponible.")
@@ -3876,7 +3946,9 @@ def registrar_modulo_pos_fase3(
     def current_cash_v3(
         session: Session = Depends(get_session),
         current_user: Any = Depends(operator_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         row = _open_session(session, current_user)
         return {"abierta": row is not None, "sesion": _cash_summary(session, row) if row else None}
 
@@ -3887,7 +3959,9 @@ def registrar_modulo_pos_fase3(
         session_id: int,
         session: Session = Depends(get_session),
         current_user: Any = Depends(operator_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         row = session.get(POSSesionCaja, session_id)
 
         if not row:
@@ -3922,7 +3996,9 @@ def registrar_modulo_pos_fase3(
         data: CerrarCajaV3Request,
         session: Session = Depends(get_session),
         current_user: Any = Depends(operator_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         row = _require_open_session(session, current_user)
         summary = _cash_summary(session, row)
         now = mexico_now()
@@ -3962,7 +4038,9 @@ def registrar_modulo_pos_fase3(
         data: CancelarV3Request,
         session: Session = Depends(get_session),
         current_user: Any = Depends(admin_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         sale = session.get(VentaPOS, sale_id)
         if not sale:
             raise HTTPException(status_code=404, detail="Venta no encontrada.")
@@ -4039,7 +4117,9 @@ def registrar_modulo_pos_fase3(
         data: DevolucionV3Request,
         session: Session = Depends(get_session),
         current_user: Any = Depends(admin_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         sale = session.get(VentaPOS, sale_id)
         if not sale or sale.estado == "CANCELADA":
             raise HTTPException(status_code=404, detail="Venta no disponible.")
@@ -4221,7 +4301,9 @@ def registrar_modulo_pos_fase3(
         fecha: Optional[date] = Query(default=None),
         session: Session = Depends(get_session),
         current_user: Any = Depends(read_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner', 'viewer'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         report_date = fecha or mexico_now().date()
         return _daily_report(session, report_date, Movimiento)
 
@@ -4230,7 +4312,9 @@ def registrar_modulo_pos_fase3(
         fecha: Optional[date] = Query(default=None),
         session: Session = Depends(get_session),
         current_user: Any = Depends(admin_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         report_date = fecha or mexico_now().date()
         data = _daily_report(session, report_date, Movimiento)
         row = session.exec(
@@ -4268,7 +4352,9 @@ def registrar_modulo_pos_fase3(
         fecha: Optional[date] = Query(default=None),
         session: Session = Depends(get_session),
         current_user: Any = Depends(read_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner', 'viewer'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         report_date = fecha or mexico_now().date()
         content = _xlsx_report(_daily_report(session, report_date, Movimiento))
         return Response(
@@ -4282,7 +4368,9 @@ def registrar_modulo_pos_fase3(
         fecha: Optional[date] = Query(default=None),
         session: Session = Depends(get_session),
         current_user: Any = Depends(read_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner', 'viewer'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         report_date = fecha or mexico_now().date()
         content = _pdf_report(_daily_report(session, report_date, Movimiento))
         return Response(
@@ -4297,7 +4385,9 @@ def registrar_modulo_pos_fase3(
         hasta: date,
         session: Session = Depends(get_session),
         current_user: Any = Depends(read_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner', 'viewer'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         if hasta < desde or (hasta - desde).days > 366:
             raise HTTPException(status_code=400, detail="Rango inválido o mayor a 366 días.")
         days = []
@@ -4326,7 +4416,9 @@ def registrar_modulo_pos_fase3(
         accion: Optional[str] = Query(default=None),
         session: Session = Depends(get_session),
         current_user: Any = Depends(admin_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         statement = select(POSAuditoria).order_by(POSAuditoria.fecha.desc()).limit(limite)
         if accion:
             statement = statement.where(POSAuditoria.accion == accion.upper())
@@ -4347,41 +4439,55 @@ def registrar_modulo_pos_fase3(
     def fixed_boxes_v4(
         session: Session = Depends(get_session),
         current_user: Any = Depends(operator_user),
-    ):
-        open_rows = _v4_open_sessions(session)
-        result = []
 
-        for number, name in POS_V4_FIXED_BOXES:
-            box = _v4_ensure_fixed_box(session, number)
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
+        open_rows = _v4_open_sessions(session)
+        box_model = globals().get("POSCaja")
+        if box_model is None:
+            return []
+
+        boxes = list(session.exec(select(box_model).order_by(box_model.nombre)).all())
+        if not boxes:
+            _v4_ensure_fixed_box(session, 1)
+            _v4_ensure_fixed_box(session, 2)
+            boxes = list(session.exec(select(box_model).order_by(box_model.nombre)).all())
+
+        result = []
+        for box in boxes:
+            if hasattr(box, "activa") and not bool(getattr(box, "activa")):
+                continue
+            box_id = int(getattr(box, "id_caja", 0) or 0)
+            name = str(getattr(box, "nombre", None) or f"Caja {box_id}")
             active = next(
                 (
-                    row
-                    for row in open_rows
-                    if str(row.caja_nombre or "").strip() == name
+                    row for row in open_rows
+                    if int(getattr(row, "id_caja", 0) or 0) == box_id
+                    or str(getattr(row, "caja_nombre", "") or "").strip() == name
                 ),
                 None,
             )
             result.append(
                 {
-                    "numero": number,
-                    "id_caja": box["id_caja"],
+                    "numero": box_id,
+                    "id_caja": box_id,
                     "nombre": name,
                     "estado": "ABIERTA" if active else "DISPONIBLE",
                     "sesion": _cash_summary(session, active) if active else None,
                 }
             )
-
         return result
 
     @app.get("/pos/v4/cajas/abiertas")
     def open_boxes_v4(
         session: Session = Depends(get_session),
         current_user: Any = Depends(admin_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         return [
             _cash_summary(session, row)
             for row in _v4_open_sessions(session)
-            if str(row.caja_nombre or "").strip() in {"Caja 1", "Caja 2"}
         ]
 
     @app.post("/pos/v4/cajas/{box_number}/abrir")
@@ -4390,7 +4496,9 @@ def registrar_modulo_pos_fase3(
         payload: Dict[str, Any],
         session: Session = Depends(get_session),
         current_user: Any = Depends(operator_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         box = _v4_ensure_fixed_box(session, box_number)
         box_name = box["nombre"]
         open_rows = _v4_open_sessions(session)
@@ -4443,7 +4551,9 @@ def registrar_modulo_pos_fase3(
         session_id: int,
         session: Session = Depends(get_session),
         current_user: Any = Depends(operator_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         row = session.get(POSSesionCaja, session_id)
         if not row:
             raise HTTPException(status_code=404, detail="Sesión de caja no encontrada.")
@@ -4461,7 +4571,9 @@ def registrar_modulo_pos_fase3(
         fecha: str,
         session: Session = Depends(get_session),
         current_user: Any = Depends(admin_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         try:
             report_date = date.fromisoformat(fecha)
         except ValueError as exc:
@@ -4501,11 +4613,13 @@ def registrar_modulo_pos_fase3(
     def list_wholesale_v4(
         session: Session = Depends(get_session),
         current_user: Any = Depends(operator_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         _v4_ensure_schema(session)
         rows = session.connection().execute(
-            sa_text("SELECT * FROM pos_mayoreo_menudeo ORDER BY nombre, sku")
-        ).mappings().all()
+            sa_text("SELECT * FROM pos_mayoreo_menudeo WHERE empresa_id = CAST(:empresa AS UUID) ORDER BY nombre, sku")
+        , {"empresa": str(session.info.get("racknova_empresa_id") or "11111111-1111-4111-8111-111111111111")}).mappings().all()
         return [_v4_serialize_wholesale(row) for row in rows]
 
     @app.post("/pos/v4/mayoreo")
@@ -4513,7 +4627,9 @@ def registrar_modulo_pos_fase3(
         payload: Dict[str, Any],
         session: Session = Depends(get_session),
         current_user: Any = Depends(admin_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         _v4_ensure_schema(session)
         sku = str(payload.get("sku") or "").strip()
         name = str(payload.get("nombre") or "").strip()
@@ -4545,6 +4661,7 @@ def registrar_modulo_pos_fase3(
                 raise HTTPException(status_code=400, detail="El precio especial debe ser menor al mayoreo normal.")
 
         params = {
+            "empresa": str(session.info.get("racknova_empresa_id") or "11111111-1111-4111-8111-111111111111"),
             "sku": sku,
             "nombre": name,
             "unidad": unit,
@@ -4562,17 +4679,17 @@ def registrar_modulo_pos_fase3(
             sa_text(
                 """
                 INSERT INTO pos_mayoreo_menudeo (
-                    sku, nombre, unidad, precio_menudeo,
+                    empresa_id, sku, nombre, unidad, precio_menudeo,
                     cantidad_mayoreo, precio_mayoreo,
                     cantidad_mayoreo_especial, precio_mayoreo_especial,
                     fecha_inicio, fecha_fin, activo, actualizado_en
                 ) VALUES (
-                    :sku, :nombre, :unidad, :precio_menudeo,
+                    CAST(:empresa AS UUID), :sku, :nombre, :unidad, :precio_menudeo,
                     :cantidad_mayoreo, :precio_mayoreo,
                     :cantidad_mayoreo_especial, :precio_mayoreo_especial,
                     :fecha_inicio, :fecha_fin, :activo, CURRENT_TIMESTAMP
                 )
-                ON CONFLICT (sku) DO UPDATE SET
+                ON CONFLICT (empresa_id, sku) DO UPDATE SET
                     nombre = EXCLUDED.nombre,
                     unidad = EXCLUDED.unidad,
                     precio_menudeo = EXCLUDED.precio_menudeo,
@@ -4596,11 +4713,13 @@ def registrar_modulo_pos_fase3(
         rule_id: int,
         session: Session = Depends(get_session),
         current_user: Any = Depends(admin_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         _v4_ensure_schema(session)
         result = session.connection().execute(
-            sa_text("DELETE FROM pos_mayoreo_menudeo WHERE id_regla = :id"),
-            {"id": rule_id},
+            sa_text("DELETE FROM pos_mayoreo_menudeo WHERE id_regla = :id AND empresa_id = CAST(:empresa AS UUID)"),
+            {"id": rule_id, "empresa": str(session.info.get("racknova_empresa_id") or "11111111-1111-4111-8111-111111111111")},
         )
         session.commit()
         if result.rowcount == 0:
@@ -4612,7 +4731,9 @@ def registrar_modulo_pos_fase3(
         payload: Dict[str, Any],
         session: Session = Depends(get_session),
         current_user: Any = Depends(operator_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         return _v4_wholesale_price(
             session,
             str(payload.get("sku") or "").strip(),
@@ -4626,7 +4747,9 @@ def registrar_modulo_pos_fase3(
         promotion_id: int,
         session: Session = Depends(get_session),
         current_user: Any = Depends(admin_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         promotion_model = globals().get("POSPromocion")
         if promotion_model is None:
             raise HTTPException(status_code=501, detail="Modelo de promociones no disponible.")
@@ -4666,7 +4789,9 @@ def registrar_modulo_pos_fase3(
         operador: Optional[str] = None,
         session: Session = Depends(get_session),
         current_user: Any = Depends(admin_user),
-    ):
+
+        rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+        _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         try:
             report_date = date.fromisoformat(fecha)
         except ValueError as exc:

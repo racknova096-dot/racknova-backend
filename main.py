@@ -1,3 +1,7 @@
+from uuid import UUID
+from fastapi import Header
+from multiempresa_tenant import bind_empresa as _rn_bind_empresa
+import multiempresa_tenant as rn_tenant
 # ==========================================================
 # RACKNOVA API — INVENTARIO + CATÁLOGO + LOTES FEFO + IA
 # Compatible con MySQL/Railway y PostgreSQL/Supabase
@@ -142,6 +146,8 @@ class IAMensajeHistorial(BaseModel):
     contenido: str = PydanticField(min_length=1)
     
 class Producto(SQLModel, table=True):
+    # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST_MODEL
+    empresa_id: UUID | None = Field(default=None, nullable=False, index=True)
     id_producto: Optional[int] = Field(default=None, primary_key=True)
 
     sku: str
@@ -170,6 +176,8 @@ class Producto(SQLModel, table=True):
 
 class ProductoCatalogo(SQLModel, table=True):
     __tablename__ = "producto_catalogo"
+    # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST_MODEL
+    empresa_id: UUID | None = Field(default=None, nullable=False, index=True)
 
     id_catalogo: Optional[int] = Field(default=None, primary_key=True)
 
@@ -184,6 +192,8 @@ class ProductoCatalogo(SQLModel, table=True):
 
 class ProductoLote(SQLModel, table=True):
     __tablename__ = "producto_lote"
+    # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST_MODEL
+    empresa_id: UUID | None = Field(default=None, nullable=False, index=True)
 
     id_lote: Optional[int] = Field(default=None, primary_key=True)
 
@@ -200,6 +210,8 @@ class ProductoLote(SQLModel, table=True):
 
 
 class Movimiento(SQLModel, table=True):
+    # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST_MODEL
+    empresa_id: UUID | None = Field(default=None, nullable=False, index=True)
     id_mov: Optional[int] = Field(default=None, primary_key=True)
 
     accion: str
@@ -2844,7 +2856,8 @@ def check_db(session: SessionDep):
 # ==========================================================
 
 @app.get("/catalogo/productos", response_model=List[ProductoCatalogo])
-def listar_catalogo(session: SessionDep, current_user: OperatorUserDep):
+def listar_catalogo(session: SessionDep, current_user: OperatorUserDep, rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID")):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
     return session.exec(select(ProductoCatalogo)).all()
 
 
@@ -2853,7 +2866,9 @@ def buscar_catalogo(
     session: SessionDep,
     current_user: OperatorUserDep,
     query: str = Query(..., min_length=1),
-):
+
+    rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
     q = f"%{query.strip()}%"
 
     statement = select(ProductoCatalogo).where(
@@ -2869,7 +2884,9 @@ def crear_catalogo(
     producto: ProductoCatalogo,
     session: SessionDep,
     current_user: OperatorUserDep,
-):
+
+    rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
     catalogo = crear_catalogo_si_no_existe(
         session=session,
         sku=producto.sku,
@@ -2889,7 +2906,9 @@ def actualizar_catalogo(
     producto: ProductoCatalogo,
     session: SessionDep,
     current_user: OperatorUserDep,
-):
+
+    rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
     catalogo = session.exec(
         select(ProductoCatalogo).where(ProductoCatalogo.sku == sku)
     ).first()
@@ -2937,7 +2956,9 @@ def eliminar_catalogo(
     sku: str,
     session: SessionDep,
     current_user: OperatorUserDep,
-):
+
+    rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
     catalogo = session.exec(
         select(ProductoCatalogo).where(ProductoCatalogo.sku == sku)
     ).first()
@@ -2970,12 +2991,15 @@ def listar_lotes_producto(
     sku: str,
     session: SessionDep,
     current_user: OperatorUserDep,
-):
+
+    rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
     return obtener_lotes_activos(session, sku)
 
 
 @app.get("/lotes", response_model=List[ProductoLote])
-def listar_lotes(session: SessionDep, current_user: ReadUserDep):
+def listar_lotes(session: SessionDep, current_user: ReadUserDep, rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID")):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner', 'viewer'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
     lotes = session.exec(select(ProductoLote)).all()
 
     return sorted(
@@ -2996,7 +3020,9 @@ def analizar_inventario_con_ia(
     data: IARequest,
     session: SessionDep,
     current_user: OperatorUserDep,
-):
+
+    rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
     pregunta_limpia = data.pregunta.strip()
 
     if not pregunta_limpia:
@@ -3040,7 +3066,9 @@ def crear_producto(
     producto: Producto,
     session: SessionDep,
     current_user: OperatorUserDep,
-):
+
+    rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
     try:
         producto.sku = normalizar_texto(producto.sku)
         producto.nombre = normalizar_texto(producto.nombre)
@@ -3208,7 +3236,8 @@ def crear_producto(
 
 
 @app.get("/productos", response_model=List[Producto])
-def listar_productos(session: SessionDep, current_user: ReadUserDep):
+def listar_productos(session: SessionDep, current_user: ReadUserDep, rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID")):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner', 'viewer'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
     return session.exec(select(Producto)).all()
 
 
@@ -3218,7 +3247,9 @@ def update_producto(
     updated: Producto,
     session: SessionDep,
     current_user: OperatorUserDep,
-):
+
+    rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
     try:
         db_producto = session.exec(
             select(Producto).where(Producto.sku == sku)
@@ -3283,7 +3314,9 @@ def eliminar_producto_por_sku(
     sku: str,
     session: SessionDep,
     current_user: OperatorUserDep,
-):
+
+    rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
     try:
         db_producto = session.exec(
             select(Producto).where(Producto.sku == sku)
@@ -3314,7 +3347,9 @@ def registrar_salida_producto(
     salida: SalidaProducto,
     session: SessionDep,
     current_user: OperatorUserDep,
-):
+
+    rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
     try:
         db_producto = session.exec(
             select(Producto).where(Producto.sku == sku)
@@ -3387,7 +3422,9 @@ def crear_movimiento(
     mov: Movimiento,
     session: SessionDep,
     current_user: OperatorUserDep,
-):
+
+    rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
     mov.fecha = mexico_now()
     mov.usuario = current_user.nombre or current_user.usuario
 
@@ -3399,7 +3436,8 @@ def crear_movimiento(
 
 
 @app.get("/movimientos", response_model=List[Movimiento])
-def listar_movimientos(session: SessionDep, current_user: ReadUserDep):
+def listar_movimientos(session: SessionDep, current_user: ReadUserDep, rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID")):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner', 'viewer'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
     return session.exec(select(Movimiento)).all()
 
 
@@ -3408,7 +3446,9 @@ def eliminar_movimiento(
     id_mov: int,
     session: SessionDep,
     current_user: AdminUserDep,
-):
+
+    rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
     mov = session.get(Movimiento, id_mov)
 
     if not mov:
@@ -3425,7 +3465,8 @@ def eliminar_movimiento(
 # ==========================================================
 
 @app.get("/finanzas/resumen")
-def resumen_financiero(session: SessionDep, current_user: AdminUserDep):
+def resumen_financiero(session: SessionDep, current_user: AdminUserDep, rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID")):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
     movimientos = session.exec(select(Movimiento)).all()
 
     ventas = [m for m in movimientos if m.accion == "Egreso"]
@@ -3442,7 +3483,8 @@ def resumen_financiero(session: SessionDep, current_user: AdminUserDep):
 
 
 @app.get("/finanzas/grafica")
-def grafica_financiera(session: SessionDep, current_user: AdminUserDep):
+def grafica_financiera(session: SessionDep, current_user: AdminUserDep, rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID")):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
     movimientos = session.exec(select(Movimiento)).all()
 
     datos = {}
@@ -3517,22 +3559,9 @@ def login(data: LoginRequest, session: SessionDep):
 
 
 @app.get("/auth/users")
-def listar_usuarios(session: SessionDep, current_user: AdminUserDep):
-    usuarios = session.exec(select(Usuario)).all()
-
-    return [
-        {
-            "id_usuario": usuario.id_usuario,
-            "usuario": usuario.usuario,
-            "nombre": usuario.nombre,
-            "rol": usuario.rol,
-            "activo": usuario.activo,
-            "fecha_creacion": usuario.fecha_creacion,
-            "ultima_actualizacion": usuario.ultima_actualizacion,
-            "ultimo_acceso": usuario.ultimo_acceso,
-        }
-        for usuario in usuarios
-    ]
+def listar_usuarios(session: SessionDep, current_user: AdminUserDep, rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID")):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
+    return rn_tenant.company_users_payload(session)
 
 
 @app.post("/auth/create_user")
@@ -3540,7 +3569,9 @@ def create_user(
     data: CreateUserRequest,
     session: SessionDep,
     current_user: AdminUserDep,
-):
+
+    rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
     usuario_limpio = normalizar_texto(data.usuario)
     contrasena_limpia = normalizar_texto(data.contrasena)
     rol_limpio = normalizar_texto(data.rol) or "operator"
@@ -3581,6 +3612,14 @@ def create_user(
     session.add(nuevo_usuario)
     session.commit()
     session.refresh(nuevo_usuario)
+    rn_tenant.attach_user_membership(
+        session,
+        usuario_key=nuevo_usuario.usuario,
+        nombre=nuevo_usuario.nombre,
+        rol=nuevo_usuario.rol,
+        activo=nuevo_usuario.activo,
+    )
+    session.commit()
 
     return {
         "mensaje": "Usuario creado correctamente",
@@ -3598,14 +3637,7 @@ def create_user(
 
 
 def contar_admins_activos(session: Session) -> int:
-    admins = session.exec(
-        select(Usuario).where(
-            (Usuario.rol == "admin")
-            & (Usuario.activo == True)
-        )
-    ).all()
-
-    return len(admins)
+    return rn_tenant.count_current_admins(session)
 
 
 @app.put("/auth/users/{id_usuario}")
@@ -3614,7 +3646,10 @@ def actualizar_usuario(
     data: UpdateUserRequest,
     session: SessionDep,
     current_user: AdminUserDep,
-):
+
+    rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
+    rn_membership = rn_tenant.company_user_guard(session, id_usuario, single_only=True)
     usuario = session.get(Usuario, id_usuario)
 
     if not usuario:
@@ -3672,6 +3707,14 @@ def actualizar_usuario(
 
     usuario.ultima_actualizacion = mexico_now()
 
+    rn_tenant.update_membership_by_id(
+        session,
+        rn_membership["id_membresia"],
+        usuario_key=usuario.usuario,
+        nombre=usuario.nombre,
+        rol=usuario.rol,
+        activo=usuario.activo,
+    )
     session.add(usuario)
     session.commit()
     session.refresh(usuario)
@@ -3698,7 +3741,9 @@ def eliminar_usuario_permanentemente(
     id_usuario: int,
     session: SessionDep,
     current_user: AdminUserDep,
-):
+
+    rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
     usuario = session.get(Usuario, id_usuario)
 
     if not usuario:
@@ -3739,7 +3784,10 @@ def desactivar_usuario(
     id_usuario: int,
     session: SessionDep,
     current_user: AdminUserDep,
-):
+
+    rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
+    rn_membership = rn_tenant.company_user_guard(session, id_usuario, single_only=True)
     usuario = session.get(Usuario, id_usuario)
 
     if not usuario:
@@ -3755,6 +3803,7 @@ def desactivar_usuario(
     usuario.activo = False
     usuario.ultima_actualizacion = mexico_now()
 
+    rn_tenant.deactivate_membership_by_id(session, rn_membership["id_membresia"])
     session.add(usuario)
     session.commit()
     session.refresh(usuario)
@@ -3780,84 +3829,11 @@ def limpiar_toda_la_base(
     confirm: str,
     session: SessionDep,
     current_user: AdminUserDep,
-):
-    if confirm != "BORRAR_TODO_RACKNOVA":
-        raise HTTPException(
-            status_code=400,
-            detail="Confirmación inválida.",
-        )
 
-    try:
-        if es_postgres():
-            session.exec(
-                text(
-                    """
-                    TRUNCATE TABLE
-                        pos_auditoria,
-                        pos_reporte_diario,
-                        pos_devolucion_extra,
-                        pos_abono,
-                        pos_credito,
-                        pos_venta_detalle_extra,
-                        pos_venta_extra,
-                        pos_promocion,
-                        pos_precio_cliente,
-                        pos_producto_configuracion,
-                        pos_cliente,
-                        pos_devolucion_detalle,
-                        pos_devolucion,
-                        pos_venta_movimiento,
-                        pos_venta_lote,
-                        pos_venta_control,
-                        pos_movimiento_efectivo,
-                        pos_sesion_caja,
-                        venta_pos_pago,
-                        venta_pos_detalle,
-                        venta_pos,
-                        producto_lote,
-                        movimiento,
-                        producto
-                    RESTART IDENTITY CASCADE;
-                    """
-                )
-            )
-        else:
-            session.exec(text("DELETE FROM pos_auditoria;"))
-            session.exec(text("DELETE FROM pos_reporte_diario;"))
-            session.exec(text("DELETE FROM pos_devolucion_extra;"))
-            session.exec(text("DELETE FROM pos_abono;"))
-            session.exec(text("DELETE FROM pos_credito;"))
-            session.exec(text("DELETE FROM pos_venta_detalle_extra;"))
-            session.exec(text("DELETE FROM pos_venta_extra;"))
-            session.exec(text("DELETE FROM pos_promocion;"))
-            session.exec(text("DELETE FROM pos_precio_cliente;"))
-            session.exec(text("DELETE FROM pos_producto_configuracion;"))
-            session.exec(text("DELETE FROM pos_cliente;"))
-            session.exec(text("DELETE FROM pos_devolucion_detalle;"))
-            session.exec(text("DELETE FROM pos_devolucion;"))
-            session.exec(text("DELETE FROM pos_venta_movimiento;"))
-            session.exec(text("DELETE FROM pos_venta_lote;"))
-            session.exec(text("DELETE FROM pos_venta_control;"))
-            session.exec(text("DELETE FROM pos_movimiento_efectivo;"))
-            session.exec(text("DELETE FROM pos_sesion_caja;"))
-            session.exec(text("DELETE FROM venta_pos_pago;"))
-            session.exec(text("DELETE FROM venta_pos_detalle;"))
-            session.exec(text("DELETE FROM venta_pos;"))
-            session.exec(text("DELETE FROM producto_lote;"))
-            session.exec(text("DELETE FROM movimiento;"))
-            session.exec(text("DELETE FROM producto;"))
-
-        session.commit()
-
-        return {
-            "mensaje": "Base limpiada correctamente. Se eliminaron productos, lotes y movimientos.",
-        }
-
-    except Exception as e:
-        session.rollback()
-        print(f"❌ Error limpiando base: {e}")
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"No se pudo limpiar la base: {str(e)}",
-        )
+    rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
+    _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
+    raise HTTPException(
+        status_code=409,
+        detail=("La limpieza global fue deshabilitada al activar Multiempresa. "
+                "No se permite borrar datos de otras empresas."),
+    )
