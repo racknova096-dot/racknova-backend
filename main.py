@@ -30,6 +30,8 @@ from time import perf_counter
 from pos_module import registrar_modulo_pos
 # RACKNOVA_FASE2_5_BLOQUE_A_IMPORT
 from racknova_runtime import register_runtime_routes
+# RACKNOVA_FASE2_5_BLOQUE_B1_IMPORT
+from racknova_outbox import register_outbox_routes
 from pos_phase3 import registrar_modulo_pos_fase3
 from ia_copilot import procesar_consulta_ia
 
@@ -334,6 +336,13 @@ def get_current_user(
 
 # RACKNOVA_FASE2_5_BLOQUE_A_REGISTER
 register_runtime_routes(
+    app=app,
+    get_session=get_session,
+    get_current_user=get_current_user,
+)
+
+# RACKNOVA_FASE2_5_BLOQUE_B1_REGISTER
+register_outbox_routes(
     app=app,
     get_session=get_session,
     get_current_user=get_current_user,
