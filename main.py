@@ -28,6 +28,8 @@ import urllib.error
 from time import perf_counter
 
 from pos_module import registrar_modulo_pos
+# RACKNOVA_FASE2_5_BLOQUE_A_IMPORT
+from racknova_runtime import register_runtime_routes
 from pos_phase3 import registrar_modulo_pos_fase3
 from ia_copilot import procesar_consulta_ia
 
@@ -329,6 +331,14 @@ def get_current_user(
         )
 
     return usuario
+
+# RACKNOVA_FASE2_5_BLOQUE_A_REGISTER
+register_runtime_routes(
+    app=app,
+    get_session=get_session,
+    get_current_user=get_current_user,
+)
+
 
 
 CurrentUserDep = Annotated[Usuario, Depends(get_current_user)]
