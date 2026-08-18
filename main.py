@@ -10,7 +10,7 @@ import multiempresa_tenant as rn_tenant
 
 from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, Depends, Query, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from typing import Annotated, Optional, List, Dict, Any, Literal
 from pydantic import BaseModel, Field as PydanticField
 from sqlmodel import SQLModel, Field, Session, select
@@ -49,7 +49,7 @@ SECRET_KEY = os.getenv("SECRET_KEY", "racknova-dev-secret-cambiar-en-render")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 12
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -3556,6 +3556,21 @@ def login(data: LoginRequest, session: SessionDep):
             "activo": usuario.activo,
         },
     }
+
+
+
+@app.post("/auth/token")
+def oauth_token(
+    form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
+    session: SessionDep,
+):
+    return login(
+        LoginRequest(
+            username=form_data.username,
+            password=form_data.password,
+        ),
+        session,
+    )
 
 
 @app.get("/auth/users")
