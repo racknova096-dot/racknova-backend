@@ -17,6 +17,8 @@ from pydantic import BaseModel, Field as PydanticField
 from sqlalchemy import or_
 from sqlmodel import Field, Session, SQLModel, select
 from sqlalchemy import text as sa_text
+# RACKNOVA_FASE2_5_BLOQUE_B2A_IMPORT
+from racknova_sync_capture import capture_operation_event as rn_capture_sync_event
 
 # La Fase 3 es aditiva: reutiliza las tablas y modelos estables de la Fase 2.
 try:
@@ -3712,6 +3714,12 @@ def registrar_modulo_pos_fase3(
                 user=_name(current_user),
                 now=now,
             )
+            # RACKNOVA_FASE2_5_BLOQUE_B2A_EVENT: pos.sale.v3.created
+            rn_capture_sync_event(
+                session,
+                event_type='pos.sale.v3.created',
+                local_vars=locals(),
+            )
             session.commit()
             session.refresh(sale)
             response = _serialize_sale(session, sale, True)
@@ -3931,6 +3939,12 @@ def registrar_modulo_pos_fase3(
             user=_name(current_user),
             now=now,
         )
+        # RACKNOVA_FASE2_5_BLOQUE_B2A_EVENT: pos.credit.installment.created
+        rn_capture_sync_event(
+            session,
+            event_type='pos.credit.installment.created',
+            local_vars=locals(),
+        )
         session.commit()
         session.refresh(row)
         return {
@@ -4022,6 +4036,12 @@ def registrar_modulo_pos_fase3(
             user=_name(current_user),
             now=now,
         )
+        # RACKNOVA_FASE2_5_BLOQUE_B2A_EVENT: pos.cash.v3.closed
+        rn_capture_sync_event(
+            session,
+            event_type='pos.cash.v3.closed',
+            local_vars=locals(),
+        )
         session.commit()
         session.refresh(row)
 
@@ -4101,6 +4121,12 @@ def registrar_modulo_pos_fase3(
                 details={"motivo": data.motivo},
                 user=_name(current_user),
                 now=now,
+            )
+            # RACKNOVA_FASE2_5_BLOQUE_B2A_EVENT: pos.sale.v3.cancelled
+            rn_capture_sync_event(
+                session,
+                event_type='pos.sale.v3.cancelled',
+                local_vars=locals(),
             )
             session.commit()
             return _serialize_sale(session, sale, True)
@@ -4277,6 +4303,12 @@ def registrar_modulo_pos_fase3(
                 },
                 user=_name(current_user),
                 now=now,
+            )
+            # RACKNOVA_FASE2_5_BLOQUE_B2A_EVENT: pos.return.v3.created
+            rn_capture_sync_event(
+                session,
+                event_type='pos.return.v3.created',
+                local_vars=locals(),
             )
             session.commit()
             return {
@@ -4538,6 +4570,12 @@ def registrar_modulo_pos_fase3(
 
         row = POSSesionCaja(**_v4_model_kwargs(POSSesionCaja, values))
         session.add(row)
+        # RACKNOVA_FASE2_5_BLOQUE_B2A_EVENT: pos.cash.v4.opened
+        rn_capture_sync_event(
+            session,
+            event_type='pos.cash.v4.opened',
+            local_vars=locals(),
+        )
         session.commit()
         session.refresh(row)
 

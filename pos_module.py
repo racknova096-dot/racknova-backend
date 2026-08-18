@@ -12,6 +12,8 @@ from fastapi import Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field as PydanticField
 from sqlalchemy import or_
 from sqlmodel import Field, Session, SQLModel, select
+# RACKNOVA_FASE2_5_BLOQUE_B2A_IMPORT
+from racknova_sync_capture import capture_operation_event as rn_capture_sync_event
 
 
 # ==========================================================
@@ -829,6 +831,12 @@ def registrar_modulo_pos(
             estado="ABIERTA",
         )
         session.add(sesion_caja)
+        # RACKNOVA_FASE2_5_BLOQUE_B2A_EVENT: pos.cash.opened
+        rn_capture_sync_event(
+            session,
+            event_type='pos.cash.opened',
+            local_vars=locals(),
+        )
         session.commit()
         session.refresh(sesion_caja)
         return {
@@ -866,6 +874,12 @@ def registrar_modulo_pos(
             fecha=mexico_now(),
         )
         session.add(movimiento)
+        # RACKNOVA_FASE2_5_BLOQUE_B2A_EVENT: pos.cash.movement
+        rn_capture_sync_event(
+            session,
+            event_type='pos.cash.movement',
+            local_vars=locals(),
+        )
         session.commit()
         return {
             "mensaje": "Movimiento de efectivo registrado.",
@@ -894,6 +908,12 @@ def registrar_modulo_pos(
             data.observaciones.strip() if data.observaciones else None
         )
         session.add(sesion_caja)
+        # RACKNOVA_FASE2_5_BLOQUE_B2A_EVENT: pos.cash.closed
+        rn_capture_sync_event(
+            session,
+            event_type='pos.cash.closed',
+            local_vars=locals(),
+        )
         session.commit()
         session.refresh(sesion_caja)
         return {
@@ -1224,6 +1244,12 @@ def registrar_modulo_pos(
                         referencia=pago["referencia"],
                     )
                 )
+            # RACKNOVA_FASE2_5_BLOQUE_B2A_EVENT: pos.sale.created
+            rn_capture_sync_event(
+                session,
+                event_type='pos.sale.created',
+                local_vars=locals(),
+            )
             session.commit()
             session.refresh(venta)
             respuesta = _serializar_venta(session, venta, True)
@@ -1362,6 +1388,12 @@ def registrar_modulo_pos(
             control.fecha_anulacion = ahora
             session.add(venta)
             session.add(control)
+            # RACKNOVA_FASE2_5_BLOQUE_B2A_EVENT: pos.sale.cancelled
+            rn_capture_sync_event(
+                session,
+                event_type='pos.sale.cancelled',
+                local_vars=locals(),
+            )
             session.commit()
             respuesta = _serializar_venta(session, venta, True)
             respuesta["mensaje"] = "Venta cancelada e inventario restaurado."
@@ -1499,6 +1531,12 @@ def registrar_modulo_pos(
                     )
                 )
 
+            # RACKNOVA_FASE2_5_BLOQUE_B2A_EVENT: pos.return.created
+            rn_capture_sync_event(
+                session,
+                event_type='pos.return.created',
+                local_vars=locals(),
+            )
             session.commit()
             return {
                 "mensaje": "Devolución registrada e inventario restaurado.",

@@ -34,6 +34,8 @@ from racknova_runtime import register_runtime_routes
 from racknova_outbox import register_outbox_routes
 from pos_phase3 import registrar_modulo_pos_fase3
 from ia_copilot import procesar_consulta_ia
+# RACKNOVA_FASE2_5_BLOQUE_B2A_IMPORT
+from racknova_sync_capture import capture_operation_event as rn_capture_sync_event
 
 try:
     from database import engine, get_session
@@ -3410,6 +3412,12 @@ def registrar_salida_producto(
             )
             session.add(db_producto)
 
+        # RACKNOVA_FASE2_5_BLOQUE_B2A_EVENT: inventory.stock_out
+        rn_capture_sync_event(
+            session,
+            event_type='inventory.stock_out',
+            local_vars=locals(),
+        )
         session.commit()
 
         return {
@@ -3448,6 +3456,12 @@ def crear_movimiento(
     mov.usuario = current_user.nombre or current_user.usuario
 
     session.add(mov)
+    # RACKNOVA_FASE2_5_BLOQUE_B2A_EVENT: inventory.movement.created
+    rn_capture_sync_event(
+        session,
+        event_type='inventory.movement.created',
+        local_vars=locals(),
+    )
     session.commit()
     session.refresh(mov)
 
