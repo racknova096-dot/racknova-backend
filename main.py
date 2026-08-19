@@ -34,6 +34,8 @@ from racknova_runtime import register_runtime_routes
 from racknova_outbox import register_outbox_routes
 # RACKNOVA_FASE2_5_BLOQUE_B3_IMPORT
 from racknova_sync_worker import register_sync_routes
+# RACKNOVA_FASE2_6_LOCAL_FIRST_IMPORT
+from racknova_local_first import register_local_first_routes
 from pos_phase3 import registrar_modulo_pos_fase3
 from ia_copilot import procesar_consulta_ia
 # RACKNOVA_FASE2_5_BLOQUE_B2A_IMPORT
@@ -361,6 +363,14 @@ register_outbox_routes(
 
 # RACKNOVA_FASE2_5_BLOQUE_B3_REGISTER
 register_sync_routes(
+    app=app,
+    get_session=get_session,
+    get_current_user=get_current_user,
+)
+
+
+# RACKNOVA_FASE2_6_LOCAL_FIRST_REGISTER
+register_local_first_routes(
     app=app,
     get_session=get_session,
     get_current_user=get_current_user,
