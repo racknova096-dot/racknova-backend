@@ -293,7 +293,7 @@ def outbox_status(
         "total": total,
         "oldest_pending_at": oldest,
         "last_event_at": last_event,
-        "sync_worker_implemented": False,
+        "sync_worker_implemented": True,
     }
 
 

@@ -203,23 +203,60 @@ def _serialize_record(
     obj: Any,
     empresa_id: str,
 ) -> dict[str, Any] | None:
+    """
+    B3: serializa desde la FILA REAL de PostgreSQL después del flush.
+
+    Así el payload incluye también sync_revision/sync_updated_at/sync_uuid y
+    columnas DB que el modelo SQLModel legacy todavía no declara.
+    """
     mapper = _mapper_for(obj)
     table = _table_name(obj)
     if mapper is None or not table or not _is_commercial_object(obj):
         return None
 
-    data: dict[str, Any] = {}
-    for col in mapper.columns:
-        name = str(col.key)
-        if _is_sensitive(name):
-            continue
-        try:
-            data[name] = _json_value(getattr(obj, name))
-        except Exception:
-            continue
-
     pk = _pk_values(obj)
-    sync_uuid = _read_sync_uuid(
+    data: dict[str, Any] = {}
+
+    if (
+        SAFE_IDENTIFIER.match(table)
+        and pk
+        and all(v is not None for v in pk.values())
+        and all(SAFE_IDENTIFIER.match(str(k)) for k in pk)
+    ):
+        clauses: list[str] = []
+        params: dict[str, Any] = {"empresa_id": str(empresa_id)}
+        for index, (key, value) in enumerate(pk.items()):
+            pname = f"rn_pk_{index}"
+            clauses.append(f'"{key}" = :{pname}')
+            params[pname] = value
+
+        try:
+            row = session.connection().execute(
+                sa_text(
+                    f'SELECT to_jsonb(t) AS data FROM "{table}" t '
+                    'WHERE t.empresa_id=CAST(:empresa_id AS UUID) '
+                    f'AND {" AND ".join(clauses)} LIMIT 1'
+                ),
+                params,
+            ).mappings().first()
+            raw = dict(row["data"]) if row and row["data"] else {}
+            for name, value in raw.items():
+                if not _is_sensitive(str(name)):
+                    data[str(name)] = _json_value(value)
+        except Exception:
+            data = {}
+
+    if not data:
+        for col in mapper.columns:
+            name = str(col.key)
+            if _is_sensitive(name):
+                continue
+            try:
+                data[name] = _json_value(getattr(obj, name))
+            except Exception:
+                continue
+
+    sync_uuid = data.get("sync_uuid") or _read_sync_uuid(
         session,
         table=table,
         empresa_id=empresa_id,
@@ -229,9 +266,13 @@ def _serialize_record(
     return {
         "table": table,
         "pk": _json_value(pk),
-        "sync_uuid": sync_uuid,
+        "sync_uuid": str(sync_uuid) if sync_uuid else None,
+        "sync_revision": data.get("sync_revision", 0),
+        "sync_updated_at": data.get("sync_updated_at"),
+        "sync_origen_nodo": data.get("sync_origen_nodo"),
         "data": data,
     }
+
 
 
 def _walk_mapped(value: Any, found: dict[int, Any], depth: int = 0) -> None:
@@ -543,7 +584,7 @@ def _snapshot_event(
     )
 
     payload = {
-        "schema_version": 3,
+        "schema_version": 4,
         "event_type": event_type,
         "runtime_mode": config.mode,
         "node_code": config.node_code,
@@ -570,6 +611,7 @@ def _snapshot_event(
         entity_sync_uuid=str(sync_uuid) if sync_uuid else None,
         event_id=event_id,
     )
+
 
 
 def capture_delete_tombstone(
@@ -692,13 +734,17 @@ def capture_operation_event(
     event_type: str,
     local_vars: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """
+    B3 schema 4.
+
+    El flush dispara los triggers de sync_revision y el tracker B2A. Después
+    leemos las filas reales para generar un payload replicable.
+    """
     local_vars = dict(local_vars or {})
     empresa_id = rn_tenant.current_empresa_id(session)
     config = load_runtime_config()
 
-    # Este flush dispara el tracker para cambios aún pendientes.
     session.flush()
-
     tracked = dict(_tracked_objects(session))
 
     records: list[dict[str, Any]] = []
@@ -736,7 +782,7 @@ def capture_operation_event(
     )
 
     payload = {
-        "schema_version": 2,
+        "schema_version": 4,
         "event_type": event_type,
         "runtime_mode": config.mode,
         "node_code": config.node_code,

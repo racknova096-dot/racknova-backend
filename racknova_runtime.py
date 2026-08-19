@@ -318,8 +318,8 @@ def runtime_status_payload(
             "error": db_error,
         },
         "sync": {
-            "implemented": False,
-            "note": "RackNova Sync se implementará en los siguientes bloques de Fase 2.5.",
+            "implemented": True,
+            "note": "RackNova Sync B3 está instalado; el transporte requiere configuración de entorno.",
         },
         "warnings": warnings,
         "ready_for_block_b": bool(
