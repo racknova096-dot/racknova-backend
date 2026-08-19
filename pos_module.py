@@ -13,7 +13,13 @@ from pydantic import BaseModel, Field as PydanticField
 from sqlalchemy import or_
 from sqlmodel import Field, Session, SQLModel, select
 # RACKNOVA_FASE2_5_BLOQUE_B2A_IMPORT
-from racknova_sync_capture import capture_operation_event as rn_capture_sync_event
+# RACKNOVA_FASE2_5_BLOQUE_B2B_IMPORT
+from racknova_sync_capture import (
+    capture_delete_tombstone as rn_capture_delete_tombstone,
+    capture_operation_event as rn_capture_sync_event,
+    capture_sql_delete_tombstone as rn_capture_sql_delete_tombstone,
+    capture_sql_row_event as rn_capture_sql_row_event,
+)
 
 
 # ==========================================================
@@ -748,6 +754,12 @@ def registrar_modulo_pos(
             creada_por=_usuario_nombre(current_user),
         )
         session.add(caja)
+        # RACKNOVA_FASE2_5_BLOQUE_B2B_EVENT: config.cashbox.created
+        rn_capture_sync_event(
+            session,
+            event_type='config.cashbox.created',
+            local_vars=locals(),
+        )
         session.commit()
         session.refresh(caja)
         return {
@@ -784,6 +796,12 @@ def registrar_modulo_pos(
                 )
         caja.activa = data.activa
         session.add(caja)
+        # RACKNOVA_FASE2_5_BLOQUE_B2B_EVENT: config.cashbox.updated
+        rn_capture_sync_event(
+            session,
+            event_type='config.cashbox.updated',
+            local_vars=locals(),
+        )
         session.commit()
         return {"id_caja": caja.id_caja, "activa": caja.activa}
 

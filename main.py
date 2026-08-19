@@ -35,7 +35,13 @@ from racknova_outbox import register_outbox_routes
 from pos_phase3 import registrar_modulo_pos_fase3
 from ia_copilot import procesar_consulta_ia
 # RACKNOVA_FASE2_5_BLOQUE_B2A_IMPORT
-from racknova_sync_capture import capture_operation_event as rn_capture_sync_event
+# RACKNOVA_FASE2_5_BLOQUE_B2B_IMPORT
+from racknova_sync_capture import (
+    capture_delete_tombstone as rn_capture_delete_tombstone,
+    capture_operation_event as rn_capture_sync_event,
+    capture_sql_delete_tombstone as rn_capture_sql_delete_tombstone,
+    capture_sql_row_event as rn_capture_sql_row_event,
+)
 
 try:
     from database import engine, get_session
@@ -2915,6 +2921,12 @@ def crear_catalogo(
         descripcion=producto.descripcion,
     )
 
+    # RACKNOVA_FASE2_5_BLOQUE_B2B_EVENT: catalog.product.upserted
+    rn_capture_sync_event(
+        session,
+        event_type='catalog.product.upserted',
+        local_vars=locals(),
+    )
     session.commit()
     session.refresh(catalogo)
 
@@ -2966,6 +2978,12 @@ def actualizar_catalogo(
         session.add(lote)
 
     session.add(catalogo)
+    # RACKNOVA_FASE2_5_BLOQUE_B2B_EVENT: catalog.product.updated
+    rn_capture_sync_event(
+        session,
+        event_type='catalog.product.updated',
+        local_vars=locals(),
+    )
     session.commit()
     session.refresh(catalogo)
 
@@ -2997,6 +3015,13 @@ def eliminar_catalogo(
             detail="No puedes eliminar del catálogo un producto que existe actualmente en inventario.",
         )
 
+    # RACKNOVA_FASE2_5_BLOQUE_B2B_EVENT: catalog.product.deleted
+    rn_capture_delete_tombstone(
+        session,
+        event_type='catalog.product.deleted',
+        obj=catalogo,
+        local_vars=locals(),
+    )
     session.delete(catalogo)
     session.commit()
 
@@ -3193,6 +3218,12 @@ def crear_producto(
             catalogo.ultima_actualizacion = mexico_now()
             session.add(catalogo)
 
+            # RACKNOVA_FASE2_5_BLOQUE_B2B_EVENT: inventory.product.restocked
+            rn_capture_sync_event(
+                session,
+                event_type='inventory.product.restocked',
+                local_vars=locals(),
+            )
             session.commit()
             session.refresh(producto_existente)
 
@@ -3243,6 +3274,12 @@ def crear_producto(
         catalogo.ultima_actualizacion = mexico_now()
         session.add(catalogo)
 
+        # RACKNOVA_FASE2_5_BLOQUE_B2B_EVENT: inventory.product.created
+        rn_capture_sync_event(
+            session,
+            event_type='inventory.product.created',
+            local_vars=locals(),
+        )
         session.commit()
         session.refresh(producto)
 
@@ -3317,6 +3354,12 @@ def update_producto(
         db_producto.ultima_actualizacion = mexico_now()
 
         session.add(db_producto)
+        # RACKNOVA_FASE2_5_BLOQUE_B2B_EVENT: inventory.product.updated
+        rn_capture_sync_event(
+            session,
+            event_type='inventory.product.updated',
+            local_vars=locals(),
+        )
         session.commit()
         session.refresh(db_producto)
 
@@ -3349,6 +3392,13 @@ def eliminar_producto_por_sku(
                 detail=f"Producto con SKU {sku} no encontrado",
             )
 
+        # RACKNOVA_FASE2_5_BLOQUE_B2B_EVENT: inventory.product.deleted
+        rn_capture_delete_tombstone(
+            session,
+            event_type='inventory.product.deleted',
+            obj=db_producto,
+            local_vars=locals(),
+        )
         session.delete(db_producto)
         session.commit()
 
@@ -3487,6 +3537,13 @@ def eliminar_movimiento(
     if not mov:
         raise HTTPException(status_code=404, detail="Movimiento no encontrado")
 
+    # RACKNOVA_FASE2_5_BLOQUE_B2B_EVENT: inventory.movement.deleted
+    rn_capture_delete_tombstone(
+        session,
+        event_type='inventory.movement.deleted',
+        obj=mov,
+        local_vars=locals(),
+    )
     session.delete(mov)
     session.commit()
 

@@ -18,7 +18,13 @@ from sqlalchemy import or_
 from sqlmodel import Field, Session, SQLModel, select
 from sqlalchemy import text as sa_text
 # RACKNOVA_FASE2_5_BLOQUE_B2A_IMPORT
-from racknova_sync_capture import capture_operation_event as rn_capture_sync_event
+# RACKNOVA_FASE2_5_BLOQUE_B2B_IMPORT
+from racknova_sync_capture import (
+    capture_delete_tombstone as rn_capture_delete_tombstone,
+    capture_operation_event as rn_capture_sync_event,
+    capture_sql_delete_tombstone as rn_capture_sql_delete_tombstone,
+    capture_sql_row_event as rn_capture_sql_row_event,
+)
 
 # La Fase 3 es aditiva: reutiliza las tablas y modelos estables de la Fase 2.
 try:
@@ -2875,6 +2881,12 @@ def registrar_modulo_pos_fase3(
             user=_name(current_user),
             now=now,
         )
+        # RACKNOVA_FASE2_5_BLOQUE_B2B_EVENT: customer.created
+        rn_capture_sync_event(
+            session,
+            event_type='customer.created',
+            local_vars=locals(),
+        )
         session.commit()
         session.refresh(row)
         return _serialize_client(row, session)
@@ -2908,6 +2920,12 @@ def registrar_modulo_pos_fase3(
             details={"nombre": row.nombre, "activo": row.activo},
             user=_name(current_user),
             now=now,
+        )
+        # RACKNOVA_FASE2_5_BLOQUE_B2B_EVENT: customer.updated
+        rn_capture_sync_event(
+            session,
+            event_type='customer.updated',
+            local_vars=locals(),
         )
         session.commit()
         return _serialize_client(row, session)
@@ -3050,6 +3068,12 @@ def registrar_modulo_pos_fase3(
             user=_name(current_user),
             now=now,
         )
+        # RACKNOVA_FASE2_5_BLOQUE_B2B_EVENT: config.product.unit.updated
+        rn_capture_sync_event(
+            session,
+            event_type='config.product.unit.updated',
+            local_vars=locals(),
+        )
         session.commit()
         session.refresh(row)
 
@@ -3114,6 +3138,12 @@ def registrar_modulo_pos_fase3(
             user=_name(current_user),
             now=now,
         )
+        # RACKNOVA_FASE2_5_BLOQUE_B2B_EVENT: config.product.updated
+        rn_capture_sync_event(
+            session,
+            event_type='config.product.updated',
+            local_vars=locals(),
+        )
         session.commit()
         session.refresh(row)
         return row
@@ -3151,6 +3181,12 @@ def registrar_modulo_pos_fase3(
             row.fecha_actualizacion = now
             row.actualizado_por = _name(current_user)
         session.add(row)
+        # RACKNOVA_FASE2_5_BLOQUE_B2B_EVENT: config.customer_price.upserted
+        rn_capture_sync_event(
+            session,
+            event_type='config.customer_price.upserted',
+            local_vars=locals(),
+        )
         session.commit()
         session.refresh(row)
         return row
@@ -3213,6 +3249,12 @@ def registrar_modulo_pos_fase3(
             user=_name(current_user),
             now=now,
         )
+        # RACKNOVA_FASE2_5_BLOQUE_B2B_EVENT: config.promotion.created
+        rn_capture_sync_event(
+            session,
+            event_type='config.promotion.created',
+            local_vars=locals(),
+        )
         session.commit()
         session.refresh(row)
         return row
@@ -3242,6 +3284,12 @@ def registrar_modulo_pos_fase3(
             details=_dump(data),
             user=_name(current_user),
             now=mexico_now(),
+        )
+        # RACKNOVA_FASE2_5_BLOQUE_B2B_EVENT: config.promotion.updated
+        rn_capture_sync_event(
+            session,
+            event_type='config.promotion.updated',
+            local_vars=locals(),
         )
         session.commit()
         return row
@@ -4743,6 +4791,14 @@ def registrar_modulo_pos_fase3(
             ),
             params,
         )
+        # RACKNOVA_FASE2_5_BLOQUE_B2B_EVENT: config.wholesale.upserted
+        rn_capture_sql_row_event(
+            session,
+            event_type='config.wholesale.upserted',
+            table='pos_mayoreo_menudeo',
+            key_values={'sku': sku},
+            local_vars=locals(),
+        )
         session.commit()
         return {"mensaje": "Regla de mayoreo guardada correctamente."}
 
@@ -4755,6 +4811,14 @@ def registrar_modulo_pos_fase3(
         rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
         _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
         _v4_ensure_schema(session)
+        # RACKNOVA_FASE2_5_BLOQUE_B2B_EVENT: config.wholesale.deleted
+        rn_capture_sql_delete_tombstone(
+            session,
+            event_type='config.wholesale.deleted',
+            table='pos_mayoreo_menudeo',
+            key_values={'id_regla': rule_id},
+            local_vars=locals(),
+        )
         result = session.connection().execute(
             sa_text("DELETE FROM pos_mayoreo_menudeo WHERE id_regla = :id AND empresa_id = CAST(:empresa AS UUID)"),
             {"id": rule_id, "empresa": str(session.info.get("racknova_empresa_id") or "11111111-1111-4111-8111-111111111111")},
@@ -4812,6 +4876,13 @@ def registrar_modulo_pos_fase3(
             except Exception:
                 continue
 
+        # RACKNOVA_FASE2_5_BLOQUE_B2B_EVENT: config.promotion.deleted
+        rn_capture_delete_tombstone(
+            session,
+            event_type='config.promotion.deleted',
+            obj=row,
+            local_vars=locals(),
+        )
         session.delete(row)
         session.commit()
         return {"mensaje": "Promoción eliminada definitivamente."}
@@ -4909,6 +4980,3 @@ def registrar_modulo_pos_fase3(
         current_user: Any = Depends(admin_user),
     ):
         return _multi_diagnostic(session)
-
-
-

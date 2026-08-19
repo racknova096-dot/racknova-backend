@@ -452,6 +452,240 @@ def _upsert_node_without_commit(
 
 
 
+# ============================================================
+# RACKNOVA FASE 2.5 — BLOQUE B2B
+# Snapshots/tombstones para DELETE y tablas SQL directas
+# ============================================================
+
+def _sql_snapshot_by_keys(
+    session: Session,
+    *,
+    table: str,
+    empresa_id: str,
+    key_values: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not SAFE_IDENTIFIER.match(str(table or "")):
+        raise ValueError("Nombre de tabla no permitido.")
+    if not key_values:
+        raise ValueError("key_values no puede estar vacío.")
+
+    clauses: list[str] = []
+    params: dict[str, Any] = {"empresa_id": str(empresa_id)}
+
+    for index, (key, value) in enumerate(key_values.items()):
+        key_s = str(key)
+        if not SAFE_IDENTIFIER.match(key_s):
+            raise ValueError(f"Identificador SQL no permitido: {key_s}")
+        param_name = f"rn_key_{index}"
+        clauses.append(f't."{key_s}" = :{param_name}')
+        params[param_name] = value
+
+    sql = (
+        f'SELECT to_jsonb(t) AS data FROM "{table}" AS t '
+        f'WHERE t.empresa_id = CAST(:empresa_id AS UUID) '
+        f'AND {" AND ".join(clauses)} LIMIT 1'
+    )
+
+    row = session.connection().execute(
+        sa_text(sql),
+        params,
+    ).mappings().first()
+
+    if not row:
+        return None
+
+    data = _json_value(row.get("data") or {})
+    if not isinstance(data, dict):
+        data = {"value": data}
+
+    return {
+        "table": table,
+        "pk": _json_value(key_values),
+        "sync_uuid": data.get("sync_uuid"),
+        "sync_revision": data.get("sync_revision"),
+        "sync_updated_at": data.get("sync_updated_at"),
+        "sync_origen_nodo": data.get("sync_origen_nodo"),
+        "data": data,
+    }
+
+
+def _snapshot_event(
+    session: Session,
+    *,
+    event_type: str,
+    operation: str,
+    record: dict[str, Any],
+    local_vars: dict[str, Any] | None = None,
+    tombstone: bool = False,
+) -> dict[str, Any]:
+    empresa_id = rn_tenant.current_empresa_id(session)
+    config = load_runtime_config()
+    operation = str(operation or "EVENT").strip().upper()
+
+    sync_uuid = record.get("sync_uuid")
+    revision = record.get("sync_revision")
+
+    if operation == "DELETE" and sync_uuid:
+        event_id = deterministic_event_id(
+            empresa_id=str(empresa_id),
+            node_code=config.node_code,
+            entity=event_type,
+            operation="DELETE",
+            entity_sync_uuid=str(sync_uuid),
+            revision=revision,
+        )
+    else:
+        event_id = uuid4()
+
+    node_id = _upsert_node_without_commit(
+        session,
+        empresa_id=str(empresa_id),
+    )
+
+    payload = {
+        "schema_version": 3,
+        "event_type": event_type,
+        "runtime_mode": config.mode,
+        "node_code": config.node_code,
+        "empresa_id": str(empresa_id),
+        "operation": operation,
+        "tombstone": bool(tombstone),
+        "context": _safe_context(dict(local_vars or {})),
+        "records": [record],
+        "record_count": 1,
+        "capture": (
+            "delete-tombstone-before-delete"
+            if tombstone
+            else "sql-row-snapshot-before-commit"
+        ),
+    }
+
+    return enqueue_outbox_event(
+        session,
+        empresa_id=str(empresa_id),
+        node_id=node_id,
+        entity=event_type,
+        operation=operation,
+        payload=payload,
+        entity_sync_uuid=str(sync_uuid) if sync_uuid else None,
+        event_id=event_id,
+    )
+
+
+def capture_delete_tombstone(
+    session: Session,
+    *,
+    event_type: str,
+    obj: Any,
+    local_vars: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Debe llamarse ANTES de session.delete(obj).
+
+    Lee el registro todavía existente, incluyendo las columnas sync_* aunque
+    no estén declaradas en el modelo SQLModel, y crea el tombstone dentro de
+    la misma transacción que posteriormente eliminará el registro.
+    """
+    empresa_id = rn_tenant.current_empresa_id(session)
+    table = _table_name(obj)
+    pk = _pk_values(obj)
+
+    if not table or not _is_commercial_object(obj):
+        raise ValueError("El objeto no pertenece a una tabla comercial sincronizable.")
+    if not pk or any(value is None for value in pk.values()):
+        raise ValueError("No se pudo determinar la PK para crear el tombstone.")
+
+    record = _sql_snapshot_by_keys(
+        session,
+        table=table,
+        empresa_id=str(empresa_id),
+        key_values=pk,
+    )
+    if not record:
+        raise HTTPException(
+            status_code=404,
+            detail="El registro a eliminar ya no existe en esta empresa.",
+        )
+
+    return _snapshot_event(
+        session,
+        event_type=event_type,
+        operation="DELETE",
+        record=record,
+        local_vars=local_vars,
+        tombstone=True,
+    )
+
+
+def capture_sql_row_event(
+    session: Session,
+    *,
+    event_type: str,
+    table: str,
+    key_values: dict[str, Any],
+    local_vars: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Captura una fila modificada mediante SQL directo. Se llama DESPUÉS del
+    INSERT/UPDATE y ANTES del commit.
+    """
+    empresa_id = rn_tenant.current_empresa_id(session)
+    record = _sql_snapshot_by_keys(
+        session,
+        table=table,
+        empresa_id=str(empresa_id),
+        key_values=key_values,
+    )
+    if not record:
+        raise HTTPException(
+            status_code=500,
+            detail=f"No se pudo capturar {table} para RackNova Sync.",
+        )
+
+    return _snapshot_event(
+        session,
+        event_type=event_type,
+        operation="EVENT",
+        record=record,
+        local_vars=local_vars,
+        tombstone=False,
+    )
+
+
+def capture_sql_delete_tombstone(
+    session: Session,
+    *,
+    event_type: str,
+    table: str,
+    key_values: dict[str, Any],
+    local_vars: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Captura una fila de SQL directo ANTES de ejecutar su DELETE.
+    """
+    empresa_id = rn_tenant.current_empresa_id(session)
+    record = _sql_snapshot_by_keys(
+        session,
+        table=table,
+        empresa_id=str(empresa_id),
+        key_values=key_values,
+    )
+    if not record:
+        raise HTTPException(
+            status_code=404,
+            detail="El registro a eliminar no existe en esta empresa.",
+        )
+
+    return _snapshot_event(
+        session,
+        event_type=event_type,
+        operation="DELETE",
+        record=record,
+        local_vars=local_vars,
+        tombstone=True,
+    )
+
+
 def capture_operation_event(
     session: Session,
     *,
