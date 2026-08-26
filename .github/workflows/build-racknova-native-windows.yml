@@ -153,6 +153,43 @@ jobs:
             throw "Dashboard sin package.json"
           }
 
+          Write-Host "Normalizando dependencias duplicadas del package.json temporal..."
+          $Package = Get-Content -LiteralPath "package.json" -Raw |
+            ConvertFrom-Json -AsHashtable
+
+          if (-not $Package.ContainsKey("dependencies")) {
+            $Package["dependencies"] = @{}
+          }
+          if (-not $Package.ContainsKey("devDependencies")) {
+            $Package["devDependencies"] = @{}
+          }
+
+          $DuplicateNames = @(
+            $Package["dependencies"].Keys |
+            Where-Object {
+              $Package["devDependencies"].ContainsKey($_)
+            }
+          )
+
+          foreach ($Name in $DuplicateNames) {
+            $ProdVersion = [string]$Package["dependencies"][$Name]
+            $DevVersion = [string]$Package["devDependencies"][$Name]
+
+            if ($ProdVersion -ne $DevVersion) {
+              throw (
+                "Dependencia duplicada con versiones distintas: " +
+                "$Name ($ProdVersion vs $DevVersion)"
+              )
+            }
+
+            Write-Host "Quitando duplicado de devDependencies: $Name"
+            $Package["devDependencies"].Remove($Name)
+          }
+
+          $Package |
+            ConvertTo-Json -Depth 100 |
+            Set-Content -LiteralPath "package.json" -Encoding utf8NoBOM
+
           if (Test-Path "bun.lock") {
             Write-Host "bun.lock moderno detectado."
           }
