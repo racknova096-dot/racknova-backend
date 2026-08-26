@@ -1,0 +1,267 @@
+name: Build RackNova Native Windows F1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    env:
+      PG_VERSION: "16.15-1"
+      PG_URL: "https://get.enterprisedb.com/postgresql/postgresql-16.15-1-windows-x64.exe"
+      PG_SHA256: "DE926FEFAD00E313E212CD438C0F04BF033E200099AD56C012724EFCEBED79F2"
+
+    steps:
+      - name: Checkout backend
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Validate RackNova backend checkpoint
+        shell: pwsh
+        run: |
+          $required = @(
+            "main.py",
+            "database.py",
+            "racknova_runtime.py",
+            "racknova_outbox.py",
+            "racknova_sync_capture.py",
+            "racknova_sync_worker.py",
+            "multiempresa_tenant.py",
+            "001_multiempresa_fase1.sql",
+            "002_multiempresa_fase2_local_first.sql"
+          )
+          foreach ($file in $required) {
+            if (-not (Test-Path $file)) {
+              throw "Falta archivo requerido: $file"
+            }
+          }
+
+          $sync = Get-Content racknova_sync_worker.py -Raw
+          if ($sync -notmatch "B3_SCHEMA_VERSION\s*=\s*4") {
+            throw "El backend no parece estar en RackNova Sync B3 schema 4."
+          }
+
+      - name: Install backend build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller==6.15.0 pywin32 tzdata
+
+      - name: Compile backend Python before packaging
+        shell: pwsh
+        run: |
+          python -m py_compile `
+            main.py `
+            database.py `
+            racknova_runtime.py `
+            racknova_outbox.py `
+            racknova_sync_capture.py `
+            racknova_sync_worker.py `
+            multiempresa_tenant.py `
+            pos_module.py `
+            pos_phase3.py `
+            native/windows/racknova_secrets.py `
+            native/windows/racknova_native_config.py `
+            native/windows/racknova_native_entry.py `
+            native/windows/racknova_service.py `
+            native/windows/racknova_ctl.py
+
+      - name: Checkout Dashboard
+        uses: actions/checkout@v4
+        with:
+          repository: racknova096-dot/racknova-dashboard
+          path: _dashboard
+
+      - name: Prepare Dashboard for Local same-origin API
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+          import re
+
+          path = Path("_dashboard/src/config.ts")
+          if not path.exists():
+              raise SystemExit("No existe _dashboard/src/config.ts")
+
+          text = path.read_text(encoding="utf-8")
+          if "VITE_API_URL" not in text:
+              raise SystemExit("config.ts ya no contiene VITE_API_URL; revisar resolver API.")
+
+          pattern = re.compile(
+              r"export\s+const\s+API_URL\s*=\s*.*?;",
+              re.DOTALL,
+          )
+          replacement = (
+              'export const API_URL =\n'
+              '  import.meta.env.VITE_API_URL ||\n'
+              '  (typeof window !== "undefined" ? window.location.origin : "");'
+          )
+
+          updated, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(
+                  f"No pude sustituir API_URL de forma segura: coincidencias={count}"
+              )
+
+          path.write_text(updated, encoding="utf-8")
+
+          app_path = Path("_dashboard/src/App.tsx")
+          if not app_path.exists():
+              raise SystemExit("No existe _dashboard/src/App.tsx")
+
+          app_text = app_path.read_text(encoding="utf-8")
+          old_router = "<BrowserRouter>"
+          new_router = '<BrowserRouter basename="/ui">'
+
+          if new_router not in app_text:
+              if app_text.count(old_router) != 1:
+                  raise SystemExit(
+                      "No pude configurar BrowserRouter basename=/ui de forma segura."
+                  )
+              app_text = app_text.replace(old_router, new_router, 1)
+
+          app_path.write_text(app_text, encoding="utf-8")
+          '@ | Set-Content _patch_dashboard_local.py -Encoding UTF8
+
+          python _patch_dashboard_local.py
+          Remove-Item _patch_dashboard_local.py
+
+      - name: Build Dashboard Local
+        working-directory: _dashboard
+        shell: pwsh
+        run: |
+          npm ci
+          npx tsc --noEmit -p tsconfig.app.json
+          npm run build -- --base=/ui/
+
+      - name: Copy Dashboard dist
+        shell: pwsh
+        run: |
+          $target = "native/windows/dashboard_dist"
+          if (Test-Path $target) { Remove-Item $target -Recurse -Force }
+          Copy-Item "_dashboard/dist" $target -Recurse
+
+          if (-not (Test-Path "$target/index.html")) {
+            throw "Dashboard dist no contiene index.html"
+          }
+
+      - name: Download and verify PostgreSQL 16.15
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force native/windows/vendor | Out-Null
+          $dest = "native/windows/vendor/postgresql-16.15-1-windows-x64.exe"
+
+          Invoke-WebRequest -Uri $env:PG_URL -OutFile $dest
+
+          $actual = (Get-FileHash $dest -Algorithm SHA256).Hash.ToUpperInvariant()
+          $expected = $env:PG_SHA256.ToUpperInvariant()
+
+          if ($actual -ne $expected) {
+            throw "SHA256 PostgreSQL inválido. Esperado=$expected Actual=$actual"
+          }
+
+          Write-Host "PostgreSQL SHA256 OK: $actual"
+
+      - name: Build RackNovaLocalService.exe
+        shell: pwsh
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --name RackNovaLocalService `
+            --paths . `
+            --paths native/windows `
+            --hidden-import win32timezone `
+            --hidden-import servicemanager `
+            --hidden-import win32serviceutil `
+            --hidden-import win32service `
+            --hidden-import win32event `
+            --collect-all tzdata `
+            --collect-all psycopg2 `
+            --add-data "native/windows/dashboard_dist;dashboard_dist" `
+            --add-data "001_multiempresa_fase1.sql;." `
+            --add-data "002_multiempresa_fase2_local_first.sql;." `
+            native/windows/racknova_service.py
+
+          if (-not (Test-Path "dist/RackNovaLocalService.exe")) {
+            throw "PyInstaller no generó RackNovaLocalService.exe"
+          }
+
+      - name: Build RackNovaCtl.exe
+        shell: pwsh
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --name RackNovaCtl `
+            --paths . `
+            --paths native/windows `
+            --collect-all tzdata `
+            --collect-all psycopg2 `
+            --add-data "001_multiempresa_fase1.sql;." `
+            --add-data "002_multiempresa_fase2_local_first.sql;." `
+            native/windows/racknova_ctl.py
+
+          if (-not (Test-Path "dist/RackNovaCtl.exe")) {
+            throw "PyInstaller no generó RackNovaCtl.exe"
+          }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+
+      - name: Build one-file RackNova Setup
+        working-directory: native/windows
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $iscc)) {
+            throw "No encontré ISCC.exe"
+          }
+
+          & $iscc RackNova.iss
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup falló."
+          }
+
+          $setup = "output/RackNova_Setup_Native_F1.exe"
+          if (-not (Test-Path $setup)) {
+            throw "No se creó $setup"
+          }
+
+          Get-FileHash $setup -Algorithm SHA256 |
+            Format-List |
+            Out-String |
+            Set-Content "output/SHA256.txt"
+
+      - name: Upload native setup
+        uses: actions/upload-artifact@v4
+        with:
+          name: RackNova-Native-Windows-F1
+          path: |
+            native/windows/output/RackNova_Setup_Native_F1.exe
+            native/windows/output/SHA256.txt
+          if-no-files-found: error
+          retention-days: 14

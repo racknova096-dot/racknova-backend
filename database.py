@@ -11,7 +11,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise Exception("❌ ERROR: No se cargó DATABASE_URL en Render")
 
-print(f"✅ DATABASE_URL detectada: {DATABASE_URL[:50]}...")
+print("✅ DATABASE_URL detectada")
 
 
 def normalize_database_url(url: str) -> str:
