@@ -21,18 +21,18 @@ jobs:
 
     steps:
       - name: Checkout backend
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: "pip"
 
-      - name: Setup Node 20
-        uses: actions/setup-node@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: "20"
+          bun-version: "1.3.3"
 
       - name: Validate RackNova backend checkpoint
         shell: pwsh
@@ -86,7 +86,7 @@ jobs:
             native/windows/racknova_ctl.py
 
       - name: Checkout Dashboard
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: racknova096-dot/racknova-dashboard
           path: _dashboard
@@ -149,9 +149,35 @@ jobs:
         working-directory: _dashboard
         shell: pwsh
         run: |
-          npm ci
-          npx tsc --noEmit -p tsconfig.app.json
-          npm run build -- --base=/ui/
+          if (-not (Test-Path "package.json")) {
+            throw "Dashboard sin package.json"
+          }
+
+          if (-not (Test-Path "bun.lockb")) {
+            throw "Dashboard sin bun.lockb; no se hará una instalación no reproducible."
+          }
+
+          Write-Host "Instalando dependencias exactas desde bun.lockb..."
+          bun install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) {
+            throw "bun install --frozen-lockfile falló."
+          }
+
+          Write-Host "Validando TypeScript con la dependencia local..."
+          bunx --bun tsc --noEmit -p tsconfig.app.json
+          if ($LASTEXITCODE -ne 0) {
+            throw "TypeScript validation falló."
+          }
+
+          Write-Host "Compilando Dashboard Local bajo /ui/..."
+          bun run build -- --base=/ui/
+          if ($LASTEXITCODE -ne 0) {
+            throw "Vite build falló."
+          }
+
+          if (-not (Test-Path "dist/index.html")) {
+            throw "El build terminó sin dist/index.html."
+          }
 
       - name: Copy Dashboard dist
         shell: pwsh
