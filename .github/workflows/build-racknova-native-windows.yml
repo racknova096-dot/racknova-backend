@@ -2,6 +2,9 @@ name: Build RackNova Native Windows F1
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
