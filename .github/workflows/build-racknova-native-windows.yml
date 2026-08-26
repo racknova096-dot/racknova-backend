@@ -153,14 +153,28 @@ jobs:
             throw "Dashboard sin package.json"
           }
 
-          if (-not (Test-Path "bun.lockb")) {
-            throw "Dashboard sin bun.lockb; no se hará una instalación no reproducible."
+          if (Test-Path "bun.lock") {
+            Write-Host "bun.lock moderno detectado."
+          }
+          elseif (Test-Path "bun.lockb") {
+            Write-Host "Migrando bun.lockb legacy a bun.lock sin cambiar versiones..."
+            bun install --save-text-lockfile --frozen-lockfile --lockfile-only
+            if ($LASTEXITCODE -ne 0) {
+              throw "Migración reproducible bun.lockb -> bun.lock falló."
+            }
+
+            if (-not (Test-Path "bun.lock")) {
+              throw "Bun no generó bun.lock después de migrar bun.lockb."
+            }
+          }
+          else {
+            throw "Dashboard sin bun.lock ni bun.lockb."
           }
 
-          Write-Host "Instalando dependencias exactas desde bun.lockb..."
-          bun install --frozen-lockfile
+          Write-Host "Instalando dependencias exactas desde lockfile..."
+          bun ci
           if ($LASTEXITCODE -ne 0) {
-            throw "bun install --frozen-lockfile falló."
+            throw "bun ci falló: package.json y lockfile no coinciden."
           }
 
           Write-Host "Validando TypeScript con la dependencia local..."
