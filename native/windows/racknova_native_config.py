@@ -107,6 +107,13 @@ def apply_native_environment() -> tuple[dict[str, Any], dict[str, Any]]:
         )
     os.environ["SECRET_KEY"] = jwt_secret
 
+    jwt_secret = str(secrets.get("jwt_secret") or "").strip()
+    if not jwt_secret:
+        raise RuntimeError(
+            "RackNova Local no tiene SECRET_KEY local protegida."
+        )
+    os.environ["SECRET_KEY"] = jwt_secret
+
     cloud_url = str(config.get("cloud_url") or "").strip().rstrip("/")
     if cloud_url:
         os.environ["RACKNOVA_CLOUD_URL"] = cloud_url

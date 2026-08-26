@@ -50,6 +50,7 @@ $PgSuperPassword = New-RackNovaPassword
 $PgServicePassword = New-RackNovaPassword
 $AppPassword = New-RackNovaPassword
 $JwtSecret = (New-RackNovaPassword) + (New-RackNovaPassword)
+$JwtSecret = (New-RackNovaPassword) + (New-RackNovaPassword)
 
 if (-not $PgService) {
     if (-not (Test-Path $PostgresInstaller)) {
@@ -100,6 +101,40 @@ else {
 
 $Psql = Join-Path $PgInstall "bin\psql.exe"
 $Createdb = Join-Path $PgInstall "bin\createdb.exe"
+
+$PgConfig = Join-Path $PgData "postgresql.conf"
+
+if (Test-Path $PgConfig) {
+    Write-Log "Aislando PostgreSQL a localhost."
+    $PgConfigText = Get-Content -LiteralPath $PgConfig -Raw
+
+    if ($PgConfigText -match '(?m)^\s*#?\s*listen_addresses\s*=.*$') {
+        $PgConfigText = [regex]::Replace(
+            $PgConfigText,
+            '(?m)^\s*#?\s*listen_addresses\s*=.*$',
+            "listen_addresses = '127.0.0.1'",
+            1
+        )
+    }
+    else {
+        $PgConfigText += "`r`nlisten_addresses = '127.0.0.1'`r`n"
+    }
+
+    if ($PgConfigText -match '(?m)^\s*#?\s*port\s*=.*$') {
+        $PgConfigText = [regex]::Replace(
+            $PgConfigText,
+            '(?m)^\s*#?\s*port\s*=.*$',
+            "port = 54329",
+            1
+        )
+    }
+    else {
+        $PgConfigText += "`r`nport = 54329`r`n"
+    }
+
+    Set-Content -LiteralPath $PgConfig -Value $PgConfigText -Encoding UTF8
+    Restart-Service "RackNovaPostgreSQL16"
+}
 
 $PgConfig = Join-Path $PgData "postgresql.conf"
 
