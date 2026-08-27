@@ -31,12 +31,61 @@ function New-RackNovaPassword {
 }
 
 function Secure-TempFile([string]$Path) {
+    $CurrentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+
+    if (Test-Path -LiteralPath $Path) {
+        & takeown.exe /F $Path /A | Out-Null
+
+        & icacls.exe `
+            $Path `
+            /grant:r `
+            "*S-1-5-18:F" `
+            "*S-1-5-32-544:F" `
+            "*${CurrentSid}:F" | Out-Null
+
+        Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+    }
+
     New-Item -ItemType File -Force -Path $Path | Out-Null
-    & icacls.exe $Path /inheritance:r | Out-Null
-    & icacls.exe $Path /grant:r "SYSTEM:F" "Administrators:F" | Out-Null
+
+    & icacls.exe `
+        $Path `
+        /inheritance:r `
+        /grant:r `
+        "*S-1-5-18:F" `
+        "*S-1-5-32-544:F" `
+        "*${CurrentSid}:F" | Out-Null
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "No pude proteger el archivo temporal: $Path"
+    }
 }
 
-Write-Log "RackNova Native F1: configuración iniciada."
+Write-Log "RackNova Native F1.6: configuración iniciada."
+
+trap {
+    try {
+        Write-Log ("ERROR: " + $_.Exception.Message)
+        if ($_.ScriptStackTrace) {
+            Write-Log ("STACK: " + ($_.ScriptStackTrace -replace "`r?`n", " | "))
+        }
+    }
+    catch {
+    }
+    exit 1
+}
+
+$Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$Principal = New-Object Security.Principal.WindowsPrincipal($Identity)
+$IsAdmin = $Principal.IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator
+)
+
+if (-not $IsAdmin) {
+    throw "RackNova Setup requiere privilegios de administrador."
+}
+
+Write-Log "Privilegios administrativos confirmados."
 
 if (-not (Test-Path $Ctl)) {
     throw "No existe RackNovaCtl.exe en $InstallDir"
@@ -62,6 +111,12 @@ if (-not $PgService) {
     Write-Log "Instalando PostgreSQL 16 dedicado a RackNova."
 
     $OptionFile = Join-Path $ConfigDir "postgres-install-options.tmp"
+    $EdbDebug = Join-Path $LogDir (
+        "postgresql-installer-" +
+        (Get-Date -Format "yyyyMMdd_HHmmss") +
+        ".log"
+    )
+
     Secure-TempFile $OptionFile
 
     @"
@@ -76,9 +131,16 @@ servicepassword=$PgServicePassword
 superaccount=racknova_super
 superpassword=$PgSuperPassword
 enable-components=server,commandlinetools
+enable_acledit=1
 create_shortcuts=0
 installer-language=es
+debuglevel=4
+debugtrace=$EdbDebug
 "@ | Set-Content -LiteralPath $OptionFile -Encoding ASCII
+
+    Write-Log "Archivo de opciones PostgreSQL protegido."
+    Write-Log "Log EDB: $EdbDebug"
+    Write-Log "Lanzando instalador PostgreSQL."
 
     try {
         $proc = Start-Process `
@@ -87,12 +149,21 @@ installer-language=es
             -Wait `
             -PassThru
 
+        Write-Log "PostgreSQL installer exit code: $($proc.ExitCode)"
+
         if ($proc.ExitCode -ne 0) {
-            throw "PostgreSQL terminó con código $($proc.ExitCode)."
+            throw (
+                "PostgreSQL terminó con código $($proc.ExitCode). " +
+                "Revisar: $EdbDebug"
+            )
         }
     }
     finally {
         Remove-Item -LiteralPath $OptionFile -Force -ErrorAction SilentlyContinue
+    }
+
+    if (-not (Test-Path (Join-Path $PgInstall "bin\psql.exe"))) {
+        throw "PostgreSQL reportó éxito pero psql.exe no existe."
     }
 
     Write-Log "PostgreSQL instalado."
@@ -305,7 +376,7 @@ $$;
         node_name = ("RackNova Local - " + $env:COMPUTERNAME)
         cloud_url = ""
         db_port = 54329
-        app_version = "native-f1"
+        app_version = "native-f1.6"
     } | ConvertTo-Json | Set-Content -LiteralPath $Bootstrap -Encoding UTF8
 
     & $Ctl bootstrap-secrets --file $Bootstrap

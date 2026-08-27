@@ -1,5 +1,5 @@
 #define MyAppName "RackNova Local"
-#define MyAppVersion "0.1.0-native-f1"
+#define MyAppVersion "0.1.6-native-f1"
 #define MyAppPublisher "RackNova"
 
 [Setup]
@@ -10,7 +10,7 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\RackNova
 DefaultGroupName=RackNova
 OutputDir=output
-OutputBaseFilename=RackNova_Setup_Native_F1
+OutputBaseFilename=RackNova_Setup_Native_F1_6
 Compression=lzma2/ultra64
 SolidCompression=yes
 PrivilegesRequired=admin

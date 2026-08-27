@@ -326,7 +326,7 @@ jobs:
             throw "Inno Setup falló."
           }
 
-          $setup = "output/RackNova_Setup_Native_F1.exe"
+          $setup = "output/RackNova_Setup_Native_F1_6.exe"
           if (-not (Test-Path $setup)) {
             throw "No se creó $setup"
           }
@@ -339,9 +339,9 @@ jobs:
       - name: Upload native setup
         uses: actions/upload-artifact@v4
         with:
-          name: RackNova-Native-Windows-F1
+          name: RackNova-Native-Windows-F1-6
           path: |
-            native/windows/output/RackNova_Setup_Native_F1.exe
+            native/windows/output/RackNova_Setup_Native_F1_6.exe
             native/windows/output/SHA256.txt
           if-no-files-found: error
           retention-days: 14
