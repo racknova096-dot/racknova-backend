@@ -1,23 +1,45 @@
 param(
-    [switch]$KeepDatabase = $true
+    [switch]$DeleteDatabase = $false
 )
 
 $ErrorActionPreference = "Continue"
 
-$serviceExe = Join-Path $env:ProgramFiles "RackNova\RackNovaLocalService.exe"
+$InstallDir = Join-Path $env:ProgramFiles "RackNova"
+$ServiceExe = Join-Path $InstallDir "RackNovaLocalService.exe"
+$PgCtl = Join-Path $InstallDir "PostgreSQL\bin\pg_ctl.exe"
+$ProgramDataRoot = Join-Path $env:ProgramData "RackNova"
+$PgData = Join-Path $ProgramDataRoot "PostgreSQL\data"
 
-if (Test-Path $serviceExe) {
-    & $serviceExe stop | Out-Null
+if (Test-Path $ServiceExe) {
+    & $ServiceExe stop | Out-Null
     Start-Sleep -Seconds 2
-    & $serviceExe remove | Out-Null
+    & $ServiceExe remove | Out-Null
 }
 
-Get-NetFirewallRule -DisplayName "RackNova Local" -ErrorAction SilentlyContinue |
+Get-NetFirewallRule `
+    -DisplayName "RackNova Local" `
+    -ErrorAction SilentlyContinue |
     Remove-NetFirewallRule -ErrorAction SilentlyContinue
 
-if (-not $KeepDatabase) {
-    Stop-Service "RackNovaPostgreSQL16" -ErrorAction SilentlyContinue
+$PgService = Get-Service `
+    -Name "RackNovaPostgreSQL16" `
+    -ErrorAction SilentlyContinue
+
+if ($PgService) {
+    Stop-Service "RackNovaPostgreSQL16" -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+
+    if (Test-Path $PgCtl) {
+        & $PgCtl unregister -N "RackNovaPostgreSQL16" | Out-Null
+    }
+    else {
+        & sc.exe delete RackNovaPostgreSQL16 | Out-Null
+    }
 }
 
-# F1 preserva C:\ProgramData\RackNova por seguridad.
+if ($DeleteDatabase) {
+    Remove-Item $PgData -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# Por defecto preserva C:\ProgramData\RackNova y la base de datos.
 exit 0

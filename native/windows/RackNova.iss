@@ -1,5 +1,5 @@
 #define MyAppName "RackNova Local"
-#define MyAppVersion "0.1.6-native-f1"
+#define MyAppVersion "0.1.7-native-f1"
 #define MyAppPublisher "RackNova"
 
 [Setup]
@@ -10,7 +10,7 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\RackNova
 DefaultGroupName=RackNova
 OutputDir=output
-OutputBaseFilename=RackNova_Setup_Native_F1_6
+OutputBaseFilename=RackNova_Setup_Native_F1_7
 Compression=lzma2/ultra64
 SolidCompression=yes
 PrivilegesRequired=admin
@@ -24,7 +24,7 @@ UninstallDisplayIcon={app}\RackNovaLocalService.exe
 [Files]
 Source: "..\..\dist\RackNovaLocalService.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\dist\RackNovaCtl.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "vendor\postgresql-16.15-1-windows-x64.exe"; DestDir: "{app}\vendor"; Flags: ignoreversion
+Source: "postgresql_portable\*"; DestDir: "{app}\PostgreSQL"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "configure_install.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 Source: "uninstall_runtime.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 
@@ -33,7 +33,7 @@ Name: "{commonappdata}\RackNova\Config"
 Name: "{commonappdata}\RackNova\Logs"
 Name: "{commonappdata}\RackNova\Backups"
 Name: "{commonappdata}\RackNova\Diagnostics"
-
+Name: "{commonappdata}\RackNova\PostgreSQL"
 
 [INI]
 Filename: "{commondesktop}\RackNova.url"; Section: "InternetShortcut"; Key: "URL"; String: "http://127.0.0.1:8000/ui/"
@@ -42,7 +42,7 @@ Filename: "{group}\RackNova.url"; Section: "InternetShortcut"; Key: "URL"; Strin
 [UninstallRun]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
     Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\uninstall_runtime.ps1"""; \
-    Flags: runhidden waituntilterminated; RunOnceId: "RackNovaRemoveService"
+    Flags: runhidden waituntilterminated; RunOnceId: "RackNovaRemoveServices"
 
 [UninstallDelete]
 Type: files; Name: "{commondesktop}\RackNova.url"
@@ -52,13 +52,13 @@ Type: files; Name: "{group}\RackNova.url"
 function InitializeSetup(): Boolean;
 begin
   Result := True;
+
   if not IsWin64 then
   begin
     MsgBox('RackNova Local requiere Windows de 64 bits.', mbError, MB_OK);
     Result := False;
   end;
 end;
-
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
@@ -69,16 +69,15 @@ begin
   if CurStep = ssPostInstall then
   begin
     WizardForm.StatusLabel.Caption := 'Configurando RackNova Local...';
+
     PowerShellExe := ExpandConstant(
       '{sys}\WindowsPowerShell\v1.0\powershell.exe'
     );
+
     Args :=
       '-NoProfile -ExecutionPolicy Bypass -File "' +
       ExpandConstant('{app}\installer\configure_install.ps1') +
-      '" -InstallDir "' + ExpandConstant('{app}') +
-      '" -PostgresInstaller "' +
-      ExpandConstant('{app}\vendor\postgresql-16.15-1-windows-x64.exe') +
-      '"';
+      '" -InstallDir "' + ExpandConstant('{app}') + '"';
 
     if not Exec(
       PowerShellExe,
@@ -88,7 +87,9 @@ begin
       ewWaitUntilTerminated,
       ResultCode
     ) then
-      RaiseException('No fue posible iniciar la configuración de RackNova.');
+      RaiseException(
+        'No fue posible iniciar la configuración de RackNova.'
+      );
 
     if ResultCode <> 0 then
       RaiseException(

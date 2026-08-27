@@ -48,6 +48,7 @@ jobs:
             "001_multiempresa_fase1.sql",
             "002_multiempresa_fase2_local_first.sql"
           )
+
           foreach ($file in $required) {
             if (-not (Test-Path $file)) {
               throw "Falta archivo requerido: $file"
@@ -98,13 +99,13 @@ jobs:
           from pathlib import Path
           import re
 
-          path = Path("_dashboard/src/config.ts")
-          if not path.exists():
+          config_path = Path("_dashboard/src/config.ts")
+          if not config_path.exists():
               raise SystemExit("No existe _dashboard/src/config.ts")
 
-          text = path.read_text(encoding="utf-8")
+          text = config_path.read_text(encoding="utf-8")
           if "VITE_API_URL" not in text:
-              raise SystemExit("config.ts ya no contiene VITE_API_URL; revisar resolver API.")
+              raise SystemExit("config.ts ya no contiene VITE_API_URL.")
 
           pattern = re.compile(
               r"export\s+const\s+API_URL\s*=\s*.*?;",
@@ -119,10 +120,9 @@ jobs:
           updated, count = pattern.subn(replacement, text, count=1)
           if count != 1:
               raise SystemExit(
-                  f"No pude sustituir API_URL de forma segura: coincidencias={count}"
+                  f"No pude sustituir API_URL: coincidencias={count}"
               )
-
-          path.write_text(updated, encoding="utf-8")
+          config_path.write_text(updated, encoding="utf-8")
 
           app_path = Path("_dashboard/src/App.tsx")
           if not app_path.exists():
@@ -135,7 +135,7 @@ jobs:
           if new_router not in app_text:
               if app_text.count(old_router) != 1:
                   raise SystemExit(
-                      "No pude configurar BrowserRouter basename=/ui de forma segura."
+                      "No pude configurar BrowserRouter basename=/ui."
                   )
               app_text = app_text.replace(old_router, new_router, 1)
 
@@ -194,33 +194,30 @@ jobs:
             Write-Host "bun.lock moderno detectado."
           }
           elseif (Test-Path "bun.lockb") {
-            Write-Host "Migrando bun.lockb legacy a bun.lock y validando el resultado..."
+            Write-Host "Migrando bun.lockb legacy a bun.lock..."
             bun install --save-text-lockfile --lockfile-only
             if ($LASTEXITCODE -ne 0) {
               throw "Migración bun.lockb -> bun.lock falló."
             }
 
             if (-not (Test-Path "bun.lock")) {
-              throw "Bun no generó bun.lock después de migrar bun.lockb."
+              throw "Bun no generó bun.lock."
             }
           }
           else {
             throw "Dashboard sin bun.lock ni bun.lockb."
           }
 
-          Write-Host "Instalando dependencias exactas desde lockfile..."
           bun ci
           if ($LASTEXITCODE -ne 0) {
-            throw "bun ci falló: package.json y lockfile no coinciden."
+            throw "bun ci falló."
           }
 
-          Write-Host "Validando TypeScript con la dependencia local..."
           bunx --bun tsc --noEmit -p tsconfig.app.json
           if ($LASTEXITCODE -ne 0) {
             throw "TypeScript validation falló."
           }
 
-          Write-Host "Compilando Dashboard Local bajo /ui/..."
           bun run build -- --base=/ui/
           if ($LASTEXITCODE -ne 0) {
             throw "Vite build falló."
@@ -234,14 +231,16 @@ jobs:
         shell: pwsh
         run: |
           $target = "native/windows/dashboard_dist"
-          if (Test-Path $target) { Remove-Item $target -Recurse -Force }
+          if (Test-Path $target) {
+            Remove-Item $target -Recurse -Force
+          }
           Copy-Item "_dashboard/dist" $target -Recurse
 
           if (-not (Test-Path "$target/index.html")) {
             throw "Dashboard dist no contiene index.html"
           }
 
-      - name: Download and verify PostgreSQL 16.15
+      - name: Download and verify PostgreSQL 16.15 source package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force native/windows/vendor | Out-Null
@@ -257,6 +256,84 @@ jobs:
           }
 
           Write-Host "PostgreSQL SHA256 OK: $actual"
+
+      - name: Extract portable PostgreSQL binaries for RackNova
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $installer = (Resolve-Path "native/windows/vendor/postgresql-16.15-1-windows-x64.exe").Path
+          $nativeRoot = (Resolve-Path "native/windows").Path
+          $extractRoot = Join-Path $nativeRoot "postgres_extract"
+          $target = Join-Path $nativeRoot "postgresql_portable"
+
+          if (Test-Path $extractRoot) {
+            Remove-Item $extractRoot -Recurse -Force
+          }
+          if (Test-Path $target) {
+            Remove-Item $target -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Force $extractRoot | Out-Null
+
+          $args = @(
+            "--extract-only", "1",
+            "--mode", "unattended",
+            "--unattendedmodeui", "none",
+            "--install_runtimes", "0",
+            "--prefix", "`"$extractRoot`""
+          )
+
+          Write-Host "Extrayendo binarios PostgreSQL sin instalar servicios..."
+          $proc = Start-Process `
+            -FilePath $installer `
+            -ArgumentList $args `
+            -PassThru
+
+          if (-not $proc.WaitForExit(300000)) {
+            & taskkill.exe /PID $proc.Id /T /F | Out-Null
+            throw "La extracción PostgreSQL excedió 5 minutos."
+          }
+
+          if ($proc.ExitCode -ne 0) {
+            throw "PostgreSQL extract-only terminó con código $($proc.ExitCode)."
+          }
+
+          $initdb = Get-ChildItem `
+            -Path $extractRoot `
+            -Filter "initdb.exe" `
+            -File `
+            -Recurse |
+            Select-Object -First 1
+
+          if (-not $initdb) {
+            throw "extract-only no produjo initdb.exe."
+          }
+
+          $pgsqlRoot = $initdb.Directory.Parent.FullName
+
+          New-Item -ItemType Directory -Force $target | Out-Null
+          Copy-Item (Join-Path $pgsqlRoot "*") $target -Recurse -Force
+
+          $required = @(
+            "bin\initdb.exe",
+            "bin\pg_ctl.exe",
+            "bin\pg_isready.exe",
+            "bin\psql.exe",
+            "bin\createdb.exe",
+            "bin\postgres.exe"
+          )
+
+          foreach ($relative in $required) {
+            $candidate = Join-Path $target $relative
+            if (-not (Test-Path $candidate)) {
+              throw "PostgreSQL portable incompleto: falta $relative"
+            }
+          }
+
+          $version = & (Join-Path $target "bin\postgres.exe") --version
+          Write-Host "PostgreSQL portable listo: $version"
+
+          Remove-Item $extractRoot -Recurse -Force
 
       - name: Build RackNovaLocalService.exe
         shell: pwsh
@@ -326,7 +403,7 @@ jobs:
             throw "Inno Setup falló."
           }
 
-          $setup = "output/RackNova_Setup_Native_F1_6.exe"
+          $setup = "output/RackNova_Setup_Native_F1_7.exe"
           if (-not (Test-Path $setup)) {
             throw "No se creó $setup"
           }
@@ -337,11 +414,11 @@ jobs:
             Set-Content "output/SHA256.txt"
 
       - name: Upload native setup
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
-          name: RackNova-Native-Windows-F1-6
+          name: RackNova-Native-Windows-F1-7
           path: |
-            native/windows/output/RackNova_Setup_Native_F1_6.exe
+            native/windows/output/RackNova_Setup_Native_F1_7.exe
             native/windows/output/SHA256.txt
           if-no-files-found: error
           retention-days: 14
