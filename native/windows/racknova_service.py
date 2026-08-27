@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 
 import servicemanager
 import win32event
@@ -58,4 +59,13 @@ class RackNovaLocalService(win32serviceutil.ServiceFramework):
 
 
 if __name__ == "__main__":
-    win32serviceutil.HandleCommandLine(RackNovaLocalService)
+    if len(sys.argv) == 1:
+        # Windows Service Control Manager inicia el EXE sin argumentos.
+        # En ejecutables congelados debemos conectar explícitamente
+        # el proceso con el dispatcher de servicios.
+        servicemanager.Initialize()
+        servicemanager.PrepareToHostSingle(RackNovaLocalService)
+        servicemanager.StartServiceCtrlDispatcher()
+    else:
+        # install / remove / start / stop / debug
+        win32serviceutil.HandleCommandLine(RackNovaLocalService)
