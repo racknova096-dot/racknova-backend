@@ -48,11 +48,11 @@ def _run_text(args: list[str]) -> str:
 
 
 def bootstrap_secrets(source: Path) -> None:
-    payload = json.loads(source.read_text(encoding="utf-8"))
+    payload = json.loads(source.read_text(encoding="utf-8-sig"))
     if not isinstance(payload, dict):
         raise RuntimeError("bootstrap secrets debe ser un objeto JSON.")
 
-    required = {"db_password", "pg_super_password"}
+    required = {"db_password", "pg_super_password", "jwt_secret"}
     missing = sorted(k for k in required if not str(payload.get(k) or ""))
     if missing:
         raise RuntimeError(
@@ -64,6 +64,7 @@ def bootstrap_secrets(source: Path) -> None:
         {
             "db_password": str(payload["db_password"]),
             "pg_super_password": str(payload["pg_super_password"]),
+            "jwt_secret": str(payload["jwt_secret"]),
             "node_credential": str(payload.get("node_credential") or ""),
         },
     )

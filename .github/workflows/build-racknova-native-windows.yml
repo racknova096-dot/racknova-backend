@@ -352,6 +352,8 @@ jobs:
             --hidden-import win32event `
             --collect-all tzdata `
             --collect-all psycopg2 `
+            --hidden-import passlib.handlers.bcrypt `
+            --collect-all bcrypt `
             --add-data "native/windows/dashboard_dist;dashboard_dist" `
             --add-data "001_multiempresa_fase1.sql;." `
             --add-data "002_multiempresa_fase2_local_first.sql;." `
@@ -373,6 +375,8 @@ jobs:
             --paths native/windows `
             --collect-all tzdata `
             --collect-all psycopg2 `
+            --hidden-import passlib.handlers.bcrypt `
+            --collect-all bcrypt `
             --add-data "001_multiempresa_fase1.sql;." `
             --add-data "002_multiempresa_fase2_local_first.sql;." `
             native/windows/racknova_ctl.py
@@ -380,6 +384,16 @@ jobs:
           if (-not (Test-Path "dist/RackNovaCtl.exe")) {
             throw "PyInstaller no generó RackNovaCtl.exe"
           }
+
+      - name: Upload F1.7 hotfix binaries
+        uses: actions/upload-artifact@v6
+        with:
+          name: RackNova-Native-Windows-F1-7-Hotfix-Binaries
+          path: |
+            dist/RackNovaCtl.exe
+            dist/RackNovaLocalService.exe
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Install Inno Setup
         shell: pwsh
