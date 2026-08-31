@@ -98,8 +98,67 @@ function Remove-LegacyInstallerSecret {
     }
 }
 
+function Protect-RackNovaBootstrapSecrets {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$DbPassword,
+
+        [Parameter(Mandatory=$true)]
+        [string]$PgSuperPassword,
+
+        [Parameter(Mandatory=$true)]
+        [string]$JwtSecret
+    )
+
+    $Bootstrap = Join-Path $ConfigDir "bootstrap-secrets.tmp.json"
+    Secure-TempFile $Bootstrap
+
+    try {
+        $BootstrapObject = [ordered]@{
+            db_password       = $DbPassword
+            pg_super_password = $PgSuperPassword
+            jwt_secret        = $JwtSecret
+            node_credential   = ""
+            activated         = $false
+            empresa_id        = "11111111-1111-4111-8111-111111111111"
+            node_code         = ("LOCAL-" + $env:COMPUTERNAME.ToUpper())
+            node_name         = ("RackNova Local - " + $env:COMPUTERNAME)
+            cloud_url         = ""
+            db_port           = 54329
+            app_version       = "native-f1.7-portable"
+        }
+
+        $Json = $BootstrapObject | ConvertTo-Json
+        $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+        [System.IO.File]::WriteAllText(
+            $Bootstrap,
+            $Json,
+            $Utf8NoBom
+        )
+
+        & $Ctl bootstrap-secrets --file $Bootstrap
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "RackNovaCtl no pudo proteger los secretos."
+        }
+
+        if (-not (Test-Path -LiteralPath $SecretsPath)) {
+            throw "RackNovaCtl no creó secrets.dat."
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $Bootstrap) {
+            Remove-Item `
+                -LiteralPath $Bootstrap `
+                -Force `
+                -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Wait-PostgresReady {
-    for ($attempt = 1; $attempt -le 30; $attempt++) {
+    for ($attempt = 1; $attempt -le 60; $attempt++) {
         & $PgIsReady `
             -h 127.0.0.1 `
             -p 54329 `
@@ -112,7 +171,7 @@ function Wait-PostgresReady {
         Start-Sleep -Seconds 2
     }
 
-    throw "PostgreSQL no quedó listo en 60 segundos."
+    throw "PostgreSQL no quedó listo en 120 segundos."
 }
 
 Write-Log "RackNova Native F1.7 portable: configuración iniciada."
@@ -199,6 +258,13 @@ if (-not $PgService) {
     }
 
     New-Item -ItemType Directory -Force -Path $PgData | Out-Null
+
+    Write-Log "Protegiendo credenciales locales antes de inicializar PostgreSQL."
+
+    Protect-RackNovaBootstrapSecrets `
+        -DbPassword $AppPassword `
+        -PgSuperPassword $PgSuperPassword `
+        -JwtSecret $JwtSecret
 
     $PwFile = Join-Path $ConfigDir "postgres-super.tmp"
     Secure-TempFile $PwFile
@@ -337,30 +403,7 @@ $$;
 
     Remove-Item Env:\PGPASSWORD -ErrorAction SilentlyContinue
 
-    $Bootstrap = Join-Path $ConfigDir "bootstrap-secrets.tmp.json"
-    Secure-TempFile $Bootstrap
-
-    @{
-        db_password = $AppPassword
-        pg_super_password = $PgSuperPassword
-        jwt_secret = $JwtSecret
-        node_credential = ""
-        activated = $false
-        empresa_id = "11111111-1111-4111-8111-111111111111"
-        node_code = ("LOCAL-" + $env:COMPUTERNAME.ToUpper())
-        node_name = ("RackNova Local - " + $env:COMPUTERNAME)
-        cloud_url = ""
-        db_port = 54329
-        app_version = "native-f1.7-portable"
-    } |
-        ConvertTo-Json |
-        Set-Content -LiteralPath $Bootstrap -Encoding UTF8
-
-    & $Ctl bootstrap-secrets --file $Bootstrap
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "RackNovaCtl no pudo proteger los secretos."
-    }
+    Write-Log "Credenciales DPAPI ya protegidas antes de inicializar PostgreSQL."
 }
 else {
     Write-Log "RackNovaPostgreSQL16 existente detectado."
@@ -394,6 +437,11 @@ if (-not $ExistingService) {
 }
 
 & sc.exe config RackNovaLocal depend= RackNovaPostgreSQL16 | Out-Null
+
+& sc.exe config RackNovaLocal start= delayed-auto | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    throw "No pude configurar RackNovaLocal como inicio automático retrasado."
+}
 
 & sc.exe failure `
     RackNovaLocal `

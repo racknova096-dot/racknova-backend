@@ -17,12 +17,14 @@ PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
+SetupIconFile=racknova.ico
 DisableProgramGroupPage=yes
 SetupLogging=yes
-UninstallDisplayIcon={app}\RackNovaLocalService.exe
+UninstallDisplayIcon={app}\racknova.ico
 
 [Files]
 Source: "..\..\dist\RackNovaLocalService.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "racknova.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\dist\RackNovaCtl.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "postgresql_portable\*"; DestDir: "{app}\PostgreSQL"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "configure_install.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
@@ -37,7 +39,11 @@ Name: "{commonappdata}\RackNova\PostgreSQL"
 
 [INI]
 Filename: "{commondesktop}\RackNova.url"; Section: "InternetShortcut"; Key: "URL"; String: "http://127.0.0.1:8000/ui/"
+Filename: "{commondesktop}\RackNova.url"; Section: "InternetShortcut"; Key: "IconFile"; String: "{app}\racknova.ico"
+Filename: "{commondesktop}\RackNova.url"; Section: "InternetShortcut"; Key: "IconIndex"; String: "0"
 Filename: "{group}\RackNova.url"; Section: "InternetShortcut"; Key: "URL"; String: "http://127.0.0.1:8000/ui/"
+Filename: "{group}\RackNova.url"; Section: "InternetShortcut"; Key: "IconFile"; String: "{app}\racknova.ico"
+Filename: "{group}\RackNova.url"; Section: "InternetShortcut"; Key: "IconIndex"; String: "0"
 
 [UninstallRun]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \

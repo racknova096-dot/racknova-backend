@@ -343,6 +343,7 @@ jobs:
             --clean `
             --onefile `
             --name RackNovaLocalService `
+            --icon native/windows/racknova.ico `
             --paths . `
             --paths native/windows `
             --hidden-import win32timezone `
@@ -371,6 +372,7 @@ jobs:
             --clean `
             --onefile `
             --name RackNovaCtl `
+            --icon native/windows/racknova.ico `
             --paths . `
             --paths native/windows `
             --collect-all tzdata `
