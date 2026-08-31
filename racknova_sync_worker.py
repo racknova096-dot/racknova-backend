@@ -75,6 +75,7 @@ PULL_ENTITY_PREFIXES = (
     "config.",
     "catalog.",
     "customer.",
+    "inventory.",
 )
 
 SAFE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -1544,6 +1545,7 @@ def pull_cloud_events(
                     entidad LIKE :p0
                  OR entidad LIKE :p1
                  OR entidad LIKE :p2
+                 OR entidad LIKE :p3
               )
               AND (
                     :after_created IS NULL
@@ -1563,6 +1565,7 @@ def pull_cloud_events(
             "p0": prefixes[0] + "%",
             "p1": prefixes[1] + "%",
             "p2": prefixes[2] + "%",
+            "p3": prefixes[3] + "%",
             "after_created": after_created_at,
             "after_event": after_event_id or "00000000-0000-0000-0000-000000000000",
             "limite": int(limit),
