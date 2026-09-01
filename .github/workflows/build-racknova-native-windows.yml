@@ -145,6 +145,48 @@ jobs:
           python _patch_dashboard_local.py
           Remove-Item _patch_dashboard_local.py
 
+      - name: Validate Dashboard POS for Native
+        working-directory: _dashboard
+        shell: pwsh
+        run: |
+          $Required = @(
+            "src/pages/PuntoVenta.tsx",
+            "src/lib/pos.ts",
+            "src/components/pos/POSFase3Panel.tsx",
+            "src/components/layout/Navigation.tsx",
+            "src/App.tsx"
+          )
+
+          foreach ($File in $Required) {
+            if (-not (Test-Path $File)) {
+              throw "Dashboard Native incompleto: falta $File"
+            }
+          }
+
+          $Nav = Get-Content -LiteralPath "src/components/layout/Navigation.tsx" -Raw
+          $Pos = Get-Content -LiteralPath "src/lib/pos.ts" -Raw
+          $App = Get-Content -LiteralPath "src/App.tsx" -Raw
+
+          if (-not $Nav.Contains("obtenerEstadoPOS")) {
+            throw "Navigation no contiene obtenerEstadoPOS."
+          }
+          if (-not $Nav.Contains("posState?.habilitado")) {
+            throw "Navigation no valida estado habilitado del POS."
+          }
+          if (-not $Pos.Contains("/pos/estado")) {
+            throw "src/lib/pos.ts no contiene /pos/estado."
+          }
+          if (-not $Pos.Contains("/pos/configuracion")) {
+            throw "src/lib/pos.ts no contiene /pos/configuracion."
+          }
+          if (-not $App.Contains("PuntoVenta")) {
+            throw "App.tsx no contiene PuntoVenta."
+          }
+
+          Write-Host "POS Dashboard validado."
+          Write-Host "Dashboard commit:"
+          git rev-parse HEAD
+
       - name: Build Dashboard Local
         working-directory: _dashboard
         shell: pwsh
@@ -341,7 +383,8 @@ jobs:
           pyinstaller `
             --noconfirm `
             --clean `
-            --onefile `
+            --onedir `
+            --contents-directory _service_internal `
             --name RackNovaLocalService `
             --icon native/windows/racknova.ico `
             --paths . `
@@ -360,7 +403,7 @@ jobs:
             --add-data "002_multiempresa_fase2_local_first.sql;." `
             native/windows/racknova_service.py
 
-          if (-not (Test-Path "dist/RackNovaLocalService.exe")) {
+          if (-not (Test-Path "dist/RackNovaLocalService/RackNovaLocalService.exe")) {
             throw "PyInstaller no generó RackNovaLocalService.exe"
           }
 
@@ -392,8 +435,9 @@ jobs:
         with:
           name: RackNova-Native-Windows-F1-7-Hotfix-Binaries
           path: |
+            dist/RackNovaLocalService/_service_internal
             dist/RackNovaCtl.exe
-            dist/RackNovaLocalService.exe
+            dist/RackNovaLocalService/RackNovaLocalService.exe
           if-no-files-found: error
           retention-days: 14
 
