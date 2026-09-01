@@ -436,6 +436,32 @@ if (-not $ExistingService) {
     }
 }
 
+# RACKNOVA_SERVICES_PIPE_TIMEOUT
+# Protección secundaria: el runtime se optimiza para iniciar más rápido,
+# pero Windows conserva margen durante arranques lentos o recuperación de PG.
+$RackNovaControlKey = "HKLM:\SYSTEM\CurrentControlSet\Control"
+
+$RackNovaPipeTimeout = (
+    Get-ItemProperty `
+        -Path $RackNovaControlKey `
+        -Name "ServicesPipeTimeout" `
+        -ErrorAction SilentlyContinue
+).ServicesPipeTimeout
+
+if (
+    (-not $RackNovaPipeTimeout) -or
+    ([int64]$RackNovaPipeTimeout -lt 120000)
+) {
+    New-ItemProperty `
+        -Path $RackNovaControlKey `
+        -Name "ServicesPipeTimeout" `
+        -PropertyType DWord `
+        -Value 120000 `
+        -Force | Out-Null
+
+    Write-Log "ServicesPipeTimeout protegido a 120000 ms."
+}
+
 & sc.exe config RackNovaLocal depend= RackNovaPostgreSQL16 | Out-Null
 
 & sc.exe config RackNovaLocal start= delayed-auto | Out-Null

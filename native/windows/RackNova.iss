@@ -23,7 +23,8 @@ SetupLogging=yes
 UninstallDisplayIcon={app}\racknova.ico
 
 [Files]
-Source: "..\..\dist\RackNovaLocalService.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\dist\RackNovaLocalService\RackNovaLocalService.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\dist\RackNovaLocalService\_service_internal\*"; DestDir: "{app}\_service_internal"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "racknova.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\dist\RackNovaCtl.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "postgresql_portable\*"; DestDir: "{app}\PostgreSQL"; Flags: ignoreversion recursesubdirs createallsubdirs

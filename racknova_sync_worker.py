@@ -746,7 +746,9 @@ def _update_json_record(
         c for c in data
         if c in meta["columns"] and c not in immutable
     ]
-    returning = ", ".join(_quote_ident(c) for c in meta["pk"]) or "sync_uuid"
+    returning = ", ".join(
+        f"dst.{_quote_ident(c)}" for c in meta["pk"]
+    ) or "dst.sync_uuid"
 
     if not columns:
         existing = _row_by_sync_uuid(

@@ -698,6 +698,12 @@ def registrar_modulo_pos(
             config.fecha_actualizacion = ahora
             config.actualizado_por = _usuario_nombre(current_user)
         session.add(config)
+        # RACKNOVA_NATIVE_UPDATE_POS_SYNC: config.pos.updated
+        rn_capture_sync_event(
+            session,
+            event_type="config.pos.updated",
+            local_vars=locals(),
+        )
         session.commit()
         return {
             "habilitado": _pos_habilitado(session),
