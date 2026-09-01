@@ -48,10 +48,24 @@ jobs:
             exit 20
           fi
 
-      - name: Commit update
+      - name: Save patched native workflow
+        uses: actions/upload-artifact@v4
+        with:
+          name: patched-native-workflow
+          path: .github/workflows/build-racknova-native-windows.yml
+          if-no-files-found: error
+
+      - name: Commit non-workflow update
         run: |
-          if git diff --quiet; then
-            echo "Nothing to commit."
+          NON_WORKFLOW="$(git diff --name-only -- \
+            racknova_sync_worker.py \
+            pos_module.py \
+            native/windows/racknova_native_config.py \
+            native/windows/configure_install.ps1 \
+            native/windows/RackNova.iss)"
+
+          if [ -z "$NON_WORKFLOW" ]; then
+            echo "No non-workflow changes to commit."
             exit 0
           fi
 
@@ -63,8 +77,7 @@ jobs:
             pos_module.py \
             native/windows/racknova_native_config.py \
             native/windows/configure_install.ps1 \
-            native/windows/RackNova.iss \
-            .github/workflows/build-racknova-native-windows.yml
+            native/windows/RackNova.iss
 
           git diff --cached --check
           git commit -m "feat: stabilize native sync POS and startup"
