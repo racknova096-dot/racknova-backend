@@ -1,0 +1,71 @@
+name: Apply RackNova Native Stability Update
+
+on:
+  push:
+    branches:
+      - update/native-stability-20260901
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout update branch
+        uses: actions/checkout@v4
+        with:
+          ref: update/native-stability-20260901
+          fetch-depth: 0
+
+      - name: Apply guarded update
+        run: python scripts/apply_native_stability_update.py
+
+      - name: Validate Python
+        run: |
+          python -m py_compile \
+            racknova_sync_worker.py \
+            pos_module.py \
+            native/windows/racknova_native_config.py \
+            native/windows/racknova_service.py \
+            native/windows/racknova_native_entry.py
+
+      - name: Validate diff
+        run: |
+          git diff --check
+          CHANGED="$(git diff --name-only)"
+          if [ -z "$CHANGED" ]; then
+            echo "No additional patch changes required."
+            exit 0
+          fi
+
+          echo "$CHANGED"
+          ALLOWED='^(racknova_sync_worker\.py|pos_module\.py|native/windows/racknova_native_config\.py|native/windows/configure_install\.ps1|native/windows/RackNova\.iss|\.github/workflows/build-racknova-native-windows\.yml)$'
+          UNEXPECTED="$(printf '%s\n' "$CHANGED" | grep -Ev "$ALLOWED" || true)"
+          if [ -n "$UNEXPECTED" ]; then
+            echo "Unexpected files changed:"
+            echo "$UNEXPECTED"
+            exit 20
+          fi
+
+      - name: Commit update
+        run: |
+          if git diff --quiet; then
+            echo "Nothing to commit."
+            exit 0
+          fi
+
+          git config user.name "RackNova Update Bot"
+          git config user.email "actions@users.noreply.github.com"
+
+          git add \
+            racknova_sync_worker.py \
+            pos_module.py \
+            native/windows/racknova_native_config.py \
+            native/windows/configure_install.ps1 \
+            native/windows/RackNova.iss \
+            .github/workflows/build-racknova-native-windows.yml
+
+          git diff --cached --check
+          git commit -m "feat: stabilize native sync POS and startup"
+          git push origin HEAD:update/native-stability-20260901
