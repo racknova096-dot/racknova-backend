@@ -85,6 +85,9 @@ def apply_native_environment() -> tuple[dict[str, Any], dict[str, Any]]:
     secrets = load_secrets()
 
     os.environ["RACKNOVA_MODE"] = "local"
+
+    # RACKNOVA_NATIVE_POS_CAPABILITY
+    os.environ["POS_ENABLED"] = "true"
     os.environ["DATABASE_URL"] = database_url(config, secrets)
     os.environ["RACKNOVA_EMPRESA_ID"] = str(
         config.get("empresa_id") or DEFAULT_EMPRESA_ID
