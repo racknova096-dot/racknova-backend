@@ -122,6 +122,11 @@ class RackNovaLocalService(win32serviceutil.ServiceFramework):
                 port=8000,
                 log_level="info",
                 access_log=False,
+                # El SCM de Windows no garantiza una consola/stdout válida.
+                # Uvicorn intenta configurar formatters de consola por defecto;
+                # en el servicio congelado eso puede abortar antes de abrir 8000.
+                # Los eventos críticos del servicio se registran con servicemanager.
+                log_config=None,
             )
             self.server = uvicorn.Server(config)
             self.server.run()
