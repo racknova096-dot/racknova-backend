@@ -1,0 +1,165 @@
+name: Validate Local AI Cloud Relay
+
+on:
+  push:
+    branches:
+      - feat/local-ai-online-relay-v2
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: feat/local-ai-online-relay-v2
+
+      - name: Install minimal runtime dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -q \
+            'pydantic>=2,<3' \
+            'fastapi>=0.110' \
+            'sqlmodel>=0.0.16' \
+            'sqlalchemy>=2,<3'
+
+      - name: Validate relay transport and Local IA path
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from unittest.mock import patch
+
+          from fastapi import FastAPI
+
+          import racknova_ai_relay as relay
+          import racknova_sync_worker as sync
+          from ia_copilot import llamar_ia_compacta
+
+
+          class FakeHTTPResponse:
+              def __init__(self, payload):
+                  self.payload = payload
+
+              def __enter__(self):
+                  return self
+
+              def __exit__(self, exc_type, exc, tb):
+                  return False
+
+              def read(self):
+                  return json.dumps(self.payload).encode('utf-8')
+
+
+          # 1) Cliente Local -> RackNova Cloud: URL y secreto del nodo.
+          os.environ['RACKNOVA_CLOUD_URL'] = 'https://cloud.example.test'
+          os.environ['RACKNOVA_SYNC_SECRET'] = 'node-secret-abcdefghijklmnopqrstuvwxyz'
+          os.environ['RACKNOVA_EMPRESA_ID'] = '11111111-1111-4111-8111-111111111111'
+          os.environ['RACKNOVA_NODE_CODE'] = 'LOCAL-TEST'
+
+          def fake_cloud_urlopen(request, timeout):
+              assert request.full_url == 'https://cloud.example.test/sync/v1/ai/complete'
+              assert request.headers.get('X-racknova-sync-secret') == os.environ['RACKNOVA_SYNC_SECRET']
+              body = json.loads(request.data.decode('utf-8'))
+              assert body['origin_node_code'] == 'LOCAL-TEST'
+              assert body['messages'][0]['content'] == 'hola local'
+              return FakeHTTPResponse({
+                  'content': 'respuesta cloud',
+                  'finish_reason': 'stop',
+                  'usage': {'total_tokens': 12},
+                  'relay': 'racknova_cloud',
+              })
+
+          with patch('racknova_ai_relay.urllib.request.urlopen', fake_cloud_urlopen):
+              result = relay.request_deepseek_via_racknova_cloud(
+                  messages=[{'role': 'user', 'content': 'hola local'}],
+                  max_tokens=256,
+                  user_id='racknova_test',
+              )
+          assert result['content'] == 'respuesta cloud'
+
+          # 2) Cloud -> proveedor IA: la API key vive solo en Cloud.
+          os.environ['DEEPSEEK_API_KEY'] = 'cloud-only-key'
+          os.environ['DEEPSEEK_MODEL'] = 'deepseek-test-model'
+
+          def fake_deepseek_urlopen(request, timeout):
+              assert request.full_url == relay.DEEPSEEK_URL
+              assert request.headers.get('Authorization') == 'Bearer cloud-only-key'
+              body = json.loads(request.data.decode('utf-8'))
+              assert body['model'] == 'deepseek-test-model'
+              return FakeHTTPResponse({
+                  'model': 'deepseek-test-model',
+                  'choices': [{
+                      'message': {'content': 'respuesta deepseek'},
+                      'finish_reason': 'stop',
+                  }],
+                  'usage': {'total_tokens': 20},
+              })
+
+          with patch('racknova_ai_relay.urllib.request.urlopen', fake_deepseek_urlopen):
+              result = relay.request_deepseek_from_cloud(
+                  messages=[{'role': 'user', 'content': 'hola cloud'}],
+                  max_tokens=256,
+                  user_id='racknova_test',
+              )
+          assert result['content'] == 'respuesta deepseek'
+
+          # 3) ia_copilot en modo Local NO exige DEEPSEEK_API_KEY local
+          #    y NO llama al requester directo.
+          os.environ['RACKNOVA_MODE'] = 'local'
+          os.environ.pop('DEEPSEEK_API_KEY', None)
+
+          def fake_relay(**kwargs):
+              return {
+                  'content': 'IA local por Cloud OK',
+                  'finish_reason': 'stop',
+                  'usage': {'total_tokens': 7},
+              }
+
+          def direct_requester_must_not_run(**kwargs):
+              raise AssertionError('Local intentó llamar DeepSeek directamente')
+
+          with patch(
+              'racknova_ai_relay.request_deepseek_via_racknova_cloud',
+              fake_relay,
+          ):
+              result = llamar_ia_compacta(
+                  pregunta='analiza mi inventario',
+                  ruta_actual='/',
+                  rol='admin',
+                  contexto={'inventario': {'productos_distintos': 2}},
+                  user_id='racknova_test',
+                  historial=[],
+                  solicitar_deepseek=direct_requester_must_not_run,
+              )
+          assert result['respuesta'] == 'IA local por Cloud OK'
+          assert result['fuente'] == 'deepseek'
+
+          # 4) La ruta Cloud queda realmente registrada por FastAPI.
+          app = FastAPI()
+
+          def fake_session():
+              raise RuntimeError('No debe ejecutarse durante registro de rutas')
+
+          def fake_user():
+              raise RuntimeError('No debe ejecutarse durante registro de rutas')
+
+          sync.register_sync_routes(
+              app=app,
+              get_session=fake_session,
+              get_current_user=fake_user,
+          )
+          paths = {route.path for route in app.routes}
+          assert '/sync/v1/ai/complete' in paths
+
+          print('Local AI Cloud relay end-to-end validation OK')
+          PY
+
+      - name: Python compile and diff check
+        run: |
+          python -m py_compile racknova_ai_relay.py ia_copilot.py racknova_sync_worker.py
+          git diff --check
