@@ -984,8 +984,9 @@ def llamar_ia_compacta(
     historial: Optional[Sequence[Any]],
     solicitar_deepseek: DeepSeekRequester,
 ) -> Dict[str, Any]:
+    is_local_runtime = normalizar(os.getenv("RACKNOVA_MODE")) == "local"
     api_key = os.getenv("DEEPSEEK_API_KEY")
-    if not api_key:
+    if not is_local_runtime and not api_key:
         raise RuntimeError("Falta configurar DEEPSEEK_API_KEY.")
 
     model = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
@@ -1029,13 +1030,24 @@ CONTEXTO RACKNOVA: {json.dumps(contexto, ensure_ascii=False, default=str, separa
         }
     )
 
-    resultado = solicitar_deepseek(
-        api_key=api_key,
-        model=model,
-        messages=messages,
-        max_tokens=max_tokens,
-        user_id=user_id,
-    )
+    if is_local_runtime:
+        # La PC local nunca recibe DEEPSEEK_API_KEY. El contexto compacto
+        # viaja por HTTPS a RackNova Cloud usando la credencial del nodo.
+        from racknova_ai_relay import request_deepseek_via_racknova_cloud
+
+        resultado = request_deepseek_via_racknova_cloud(
+            messages=messages,
+            max_tokens=max_tokens,
+            user_id=user_id,
+        )
+    else:
+        resultado = solicitar_deepseek(
+            api_key=api_key,
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            user_id=user_id,
+        )
 
     contenido = str(resultado.get("content") or "").strip()
     if not contenido:

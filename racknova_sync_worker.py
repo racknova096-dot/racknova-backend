@@ -24,6 +24,10 @@ from sqlmodel import Session
 
 import multiempresa_tenant as rn_tenant
 from racknova_runtime import ensure_node_registered, load_runtime_config
+from racknova_ai_relay import (
+    RackNovaAICloudCompletionRequest,
+    request_deepseek_from_cloud,
+)
 
 
 B3_SCHEMA_VERSION = 4
@@ -2117,6 +2121,59 @@ def register_sync_routes(
             },
         ).mappings().all()
         return [dict(row) for row in rows]
+
+    # RackNova IA Local -> Cloud. La API key del proveedor nunca sale de Cloud.
+    @app.post("/sync/v1/ai/complete", tags=["RackNova IA"])
+    def racknova_sync_ai_complete(
+        body: RackNovaAICloudCompletionRequest,
+        x_sync_secret: str | None = Header(
+            default=None,
+            alias="X-RackNova-Sync-Secret",
+        ),
+        session: Session = Depends(get_session),
+    ):
+        _require_sync_secret(x_sync_secret)
+        config = load_runtime_config()
+        if not config.is_cloud:
+            raise HTTPException(
+                status_code=409,
+                detail="El relay de RackNova IA solo está disponible en modo cloud.",
+            )
+
+        empresa_id = _validate_uuid(body.empresa_id, "empresa_id")
+        if not _company_exists(session, empresa_id):
+            raise HTTPException(
+                status_code=404,
+                detail="Empresa no encontrada o inactiva.",
+            )
+
+        node_exists = session.connection().execute(
+            sa_text(
+                """
+                SELECT 1
+                FROM racknova_nodos
+                WHERE empresa_id=CAST(:empresa AS UUID)
+                  AND codigo=:codigo
+                  AND activo=TRUE
+                LIMIT 1
+                """
+            ),
+            {
+                "empresa": empresa_id,
+                "codigo": str(body.origin_node_code),
+            },
+        ).scalar_one_or_none()
+        if not node_exists:
+            raise HTTPException(
+                status_code=403,
+                detail="El nodo local no está registrado o está inactivo.",
+            )
+
+        return request_deepseek_from_cloud(
+            messages=[item.model_dump() for item in body.messages],
+            max_tokens=body.max_tokens,
+            user_id=body.user_id,
+        )
 
     # Endpoint máquina-a-máquina. No usa login de usuario.
     @app.post("/sync/v1/ingest", tags=["RackNova Sync B3"])
