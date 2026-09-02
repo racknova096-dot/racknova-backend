@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   patch:
-    if: github.event.head_commit.message != 'feat: route local RackNova IA through cloud'
+    if: "${{ github.event.head_commit.message != 'feat: route local RackNova IA through cloud' }}"
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -27,10 +27,6 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          # ----------------------------------------------------------
-          # ia_copilot.py: Local usa RackNova Cloud; Cloud conserva
-          # el requester directo existente.
-          # ----------------------------------------------------------
           path = Path('ia_copilot.py')
           text = path.read_text(encoding='utf-8')
 
@@ -53,9 +49,6 @@ jobs:
               text = text.replace(old_call, new_call, 1)
               path.write_text(text, encoding='utf-8')
 
-          # ----------------------------------------------------------
-          # racknova_sync_worker.py: endpoint máquina-a-máquina de IA.
-          # ----------------------------------------------------------
           path = Path('racknova_sync_worker.py')
           text = path.read_text(encoding='utf-8')
 
