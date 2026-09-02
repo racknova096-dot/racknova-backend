@@ -82,3 +82,34 @@ jobs:
           assert checked["files"][0]["path"] == "index.html"
           print("Dashboard manifest validation OK")
           PY
+
+      - name: Verify production Native Dashboard feed
+        env:
+          PYTHONPATH: native/windows
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import urllib.request
+          from racknova_dashboard_updater import DEFAULT_MANIFEST_URL, _validate_manifest
+
+          request = urllib.request.Request(
+              DEFAULT_MANIFEST_URL,
+              headers={"User-Agent": "RackNova-CI-Feed-Check/1"},
+          )
+          with urllib.request.urlopen(request, timeout=20) as response:
+              manifest = _validate_manifest(json.loads(response.read().decode("utf-8")))
+
+          index = next(item for item in manifest["files"] if item["path"] == "index.html")
+          index_url = DEFAULT_MANIFEST_URL.rsplit("/", 1)[0] + "/files/index.html"
+          request = urllib.request.Request(
+              index_url,
+              headers={"User-Agent": "RackNova-CI-Feed-Check/1"},
+          )
+          with urllib.request.urlopen(request, timeout=20) as response:
+              body = response.read()
+
+          assert len(body) == int(index["size"])
+          assert hashlib.sha256(body).hexdigest() == index["sha256"]
+          print("Production Native Dashboard feed OK:", manifest["version"])
+          PY
