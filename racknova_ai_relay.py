@@ -77,8 +77,9 @@ def request_deepseek_from_cloud(
         "model": model,
         "messages": safe_messages,
         "max_tokens": max(64, min(int(max_tokens or 4096), 4096)),
+        "temperature": 0.1,
         "stream": False,
-        "user": str(user_id or "racknova")[:200],
+        "user_id": str(user_id or "racknova")[:200],
     }
 
     request = urllib.request.Request(
