@@ -1,0 +1,84 @@
+name: Validate POS and Native Dashboard Update
+
+on:
+  push:
+    branches:
+      - feat/pos-cloud-dashboard-update
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compile changed Python
+        run: |
+          python -m py_compile \
+            database.py \
+            racknova_sync_pos_extension.py \
+            native/windows/racknova_dashboard_updater.py \
+            native/windows/racknova_native_entry.py
+
+      - name: Validate POS extension wiring
+        env:
+          DATABASE_URL: postgresql+psycopg2://racknova:dummy@127.0.0.1:54329/racknova
+        run: |
+          python - <<'PY'
+          import racknova_sync_worker as worker
+          import racknova_sync_pos_extension as extension
+
+          original = extension._ORIGINAL_SYNC_ONCE
+          extension.install_pos_cloud_to_local_extension()
+
+          assert worker.sync_once is extension._sync_once_with_pos
+          assert worker.pull_cloud_events is extension._pull_cloud_events_with_pos
+          assert "pos." in worker.PULL_ENTITY_PREFIXES
+          assert original is not worker.sync_once
+          print("POS extension wiring OK")
+          PY
+
+      - name: Validate Dashboard manifest rules
+        env:
+          PYTHONPATH: native/windows
+        run: |
+          python - <<'PY'
+          import hashlib
+          from racknova_dashboard_updater import _validate_manifest
+
+          data = b"<html>RackNova</html>"
+          manifest = {
+              "schema_version": 1,
+              "product": "racknova-dashboard-native",
+              "version": "test-version",
+              "source_commit": "test",
+              "base_path": "/ui/",
+              "api_mode": "same-origin",
+              "files": [
+                  {
+                      "path": "index.html",
+                      "sha256": hashlib.sha256(data).hexdigest(),
+                      "size": len(data),
+                  }
+              ],
+          }
+          checked = _validate_manifest(manifest)
+          assert checked["version"] == "test-version"
+          assert checked["files"][0]["path"] == "index.html"
+          print("Dashboard manifest validation OK")
+          PY
