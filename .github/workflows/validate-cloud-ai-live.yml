@@ -1,0 +1,48 @@
+name: Validate RackNova Cloud AI Relay Live
+
+on:
+  push:
+    branches:
+      - validate/cloud-ai-live-check
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Wait for Render deployment and verify route
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import time
+          import urllib.request
+
+          url = "https://racknova-backend-1.onrender.com/openapi.json"
+          target = "/sync/v1/ai/complete"
+          last_error = None
+
+          for attempt in range(1, 25):
+              try:
+                  req = urllib.request.Request(
+                      url,
+                      headers={"User-Agent": "RackNova-Live-Check/1"},
+                  )
+                  with urllib.request.urlopen(req, timeout=25) as response:
+                      data = json.loads(response.read().decode("utf-8"))
+                  paths = data.get("paths") or {}
+                  if target in paths:
+                      print(f"OK: {target} está publicado en RackNova Cloud (intento {attempt}).")
+                      raise SystemExit(0)
+                  last_error = f"ruta aún no publicada; paths={len(paths)}"
+              except Exception as exc:
+                  last_error = str(exc)
+
+              print(f"Intento {attempt}/24: {last_error}")
+              time.sleep(20)
+
+          raise SystemExit(f"RackNova Cloud no publicó {target}: {last_error}")
+          PY
