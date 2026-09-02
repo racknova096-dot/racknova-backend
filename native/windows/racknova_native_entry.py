@@ -7,6 +7,11 @@ from typing import Any
 from fastapi import HTTPException
 from fastapi.responses import FileResponse, RedirectResponse
 
+from racknova_dashboard_updater import (
+    active_dashboard_dir,
+    dashboard_update_status,
+    start_dashboard_update_worker,
+)
 from racknova_native_config import apply_native_environment
 
 
@@ -22,14 +27,18 @@ def get_app() -> Any:
     # Importar después de fijar DATABASE_URL y RACKNOVA_MODE.
     from main import app
 
-    dashboard = resource_path("dashboard_dist")
-    index = dashboard / "index.html"
+    embedded_dashboard = resource_path("dashboard_dist")
+
+    def _dashboard() -> tuple[Path, str]:
+        return active_dashboard_dir(embedded_dashboard)
 
     @app.get(
         "/racknova-native/health",
         include_in_schema=False,
     )
     def racknova_native_health() -> dict[str, Any]:
+        _, dashboard_source = _dashboard()
+        update_status = dashboard_update_status()
         return {
             "ok": True,
             "runtime": "native_windows",
@@ -37,6 +46,22 @@ def get_app() -> Any:
             "activated": bool(config.get("activated", False)),
             "node_code": config.get("node_code"),
             "ui": "/ui/",
+            "dashboard": {
+                "source": dashboard_source,
+                "version": update_status.get("installed_version"),
+                "update_state": update_status.get("state"),
+            },
+        }
+
+    @app.get(
+        "/racknova-native/dashboard-update/status",
+        include_in_schema=False,
+    )
+    def racknova_dashboard_update_status() -> dict[str, Any]:
+        _, source = _dashboard()
+        return {
+            "source": source,
+            **dashboard_update_status(),
         }
 
     @app.get("/ui", include_in_schema=False)
@@ -45,10 +70,12 @@ def get_app() -> Any:
 
     @app.get("/ui/{full_path:path}", include_in_schema=False)
     def racknova_ui(full_path: str) -> FileResponse:
+        dashboard, _ = _dashboard()
+        index = dashboard / "index.html"
         if not index.exists():
             raise HTTPException(
                 status_code=503,
-                detail="Dashboard Local no fue empaquetado.",
+                detail="Dashboard Local no fue empaquetado ni actualizado.",
             )
 
         relative = (full_path or "").strip("/")
@@ -62,7 +89,15 @@ def get_app() -> Any:
             if candidate.exists() and candidate.is_file():
                 return FileResponse(candidate)
 
-        # SPA fallback: /ui/products, /ui/pos, etc.
-        return FileResponse(index)
+        # SPA fallback: /ui/products, /ui/pos, etc. No cacheamos index para
+        # que una actualización validada aparezca con el siguiente refresh.
+        return FileResponse(
+            index,
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
+
+    # Solo crea un hilo daemon; la primera consulta remota se retrasa y nunca
+    # bloquea el arranque del servicio Windows.
+    start_dashboard_update_worker()
 
     return app
