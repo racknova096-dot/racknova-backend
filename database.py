@@ -68,6 +68,13 @@ except Exception as e:
     print(f"❌ ERROR al crear engine: {e}")
     raise
 
+# racknova_sync_worker ya fue importado por main.py antes de database.py.
+# Instalamos aquí la extensión para que tanto Cloud como Local usen el feed
+# POS ampliado sin resetear el cursor B3 existente.
+from racknova_sync_pos_extension import install_pos_cloud_to_local_extension
+
+install_pos_cloud_to_local_extension()
+
 
 def get_session():
     with Session(engine) as session:
