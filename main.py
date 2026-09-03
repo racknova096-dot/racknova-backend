@@ -578,6 +578,16 @@ def crear_indice_si_falta(
 
 def crear_indices_rendimiento() -> None:
     indices = [
+        (
+            "racknova_scan_configuracion",
+            "idx_racknova_scan_config_sync",
+            ["empresa_id", "sync_uuid"],
+        ),
+        (
+            "racknova_ubicacion_identidad",
+            "idx_racknova_ubicacion_sync",
+            ["empresa_id", "sync_uuid"],
+        ),
         ("producto", "idx_producto_sku_fast", ["sku"]),
         ("producto", "idx_producto_nombre_fast", ["nombre"]),
         ("producto", "idx_producto_ubicacion_fast", ["rack", "nivel", "slot"]),
@@ -676,6 +686,51 @@ def crear_indices_rendimiento() -> None:
 
 def ejecutar_migraciones_ligeras():
     with Session(engine) as session:
+        # RackNova Scan Fase 3: las tablas pudieron existir antes de incorporar
+        # identidad/revision B3. create_all() no altera tablas existentes, por
+        # eso completamos el esquema de forma idempotente en PostgreSQL.
+        if es_postgres():
+            for tabla_scan in (
+                "racknova_scan_configuracion",
+                "racknova_ubicacion_identidad",
+            ):
+                agregar_columna_si_falta(
+                    session, tabla_scan, "sync_uuid",
+                    "UUID NOT NULL DEFAULT gen_random_uuid()",
+                )
+                agregar_columna_si_falta(
+                    session, tabla_scan, "sync_revision",
+                    "BIGINT NOT NULL DEFAULT 0",
+                )
+                agregar_columna_si_falta(
+                    session, tabla_scan, "sync_updated_at",
+                    "TIMESTAMP NULL",
+                )
+                agregar_columna_si_falta(
+                    session, tabla_scan, "sync_origen_nodo",
+                    "VARCHAR(120) NULL",
+                )
+
+            # Identidad determinística para convergencia Cloud <-> Local.
+            # Configuración: una sola identidad por empresa.
+            session.exec(
+                text(
+                    "UPDATE racknova_scan_configuracion "
+                    "SET sync_uuid = empresa_id "
+                    "WHERE sync_uuid IS DISTINCT FROM empresa_id;"
+                )
+            )
+            # Ubicación: la identidad física RNLOC nace de id_ubicacion.
+            session.exec(
+                text(
+                    "UPDATE racknova_ubicacion_identidad "
+                    "SET sync_uuid = id_ubicacion "
+                    "WHERE sync_uuid IS DISTINCT FROM id_ubicacion;"
+                )
+            )
+            session.commit()
+            # RACKNOVA_SCAN_SYNC_DETERMINISTIC_IDENTITY_20260903
+
         agregar_columna_si_falta(
             session,
             "producto",
@@ -3974,3 +4029,5 @@ def limpiar_toda_la_base(
         detail=("La limpieza global fue deshabilitada al activar Multiempresa. "
                 "No se permite borrar datos de otras empresas."),
     )
+
+# RACKNOVA_SCAN_SYNC_COMPLETE_20260903
