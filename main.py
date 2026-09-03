@@ -28,6 +28,7 @@ import urllib.error
 from time import perf_counter
 
 from pos_module import registrar_modulo_pos
+from scan_control_module import registrar_modulo_scan_control
 # RACKNOVA_FASE2_5_BLOQUE_A_IMPORT
 from racknova_runtime import register_runtime_routes
 # RACKNOVA_FASE2_5_BLOQUE_B1_IMPORT
@@ -1066,6 +1067,17 @@ def descontar_lotes_fefo(
 
     return detalle
 
+
+# ==========================================================
+# SCAN CONTROL + IDENTIDAD DE UBICACIONES — OPCIONAL
+# ==========================================================
+# RACKNOVA_SCAN_CONTROL_FASE3
+registrar_modulo_scan_control(
+    app=app,
+    get_session=get_session,
+    require_roles=require_roles,
+    mexico_now=mexico_now,
+)
 
 # ==========================================================
 # PUNTO DE VENTA — MÓDULO OPCIONAL
