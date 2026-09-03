@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field as PydanticField
 from sqlmodel import Field, Session, SQLModel, select
 
 from multiempresa_tenant import bind_empresa as _rn_bind_empresa
+from racknova_sync_capture import capture_operation_event as rn_capture_sync_event
 
 
 # ==========================================================
@@ -31,6 +32,13 @@ class RackNovaScanConfiguracion(SQLModel, table=True):
     fecha_actualizacion: datetime
     actualizado_por: str = "Sistema"
 
+    # Identidad estable B3 Local <-> Cloud. Las tablas nuevas nacen ya listas
+    # para RackNova Sync y no requieren resetear ningún cursor existente.
+    sync_uuid: UUID = Field(default_factory=uuid4, nullable=False, index=True)
+    sync_revision: int = Field(default=0, nullable=False)
+    sync_updated_at: Optional[datetime] = Field(default=None, nullable=True)
+    sync_origen_nodo: Optional[str] = Field(default=None, nullable=True, max_length=120)
+
 
 class RackNovaUbicacionIdentidad(SQLModel, table=True):
     __tablename__ = "racknova_ubicacion_identidad"
@@ -50,6 +58,11 @@ class RackNovaUbicacionIdentidad(SQLModel, table=True):
     fecha_actualizacion: datetime
     creado_por: str = "Sistema"
     actualizado_por: str = "Sistema"
+
+    sync_uuid: UUID = Field(default_factory=uuid4, nullable=False, index=True)
+    sync_revision: int = Field(default=0, nullable=False)
+    sync_updated_at: Optional[datetime] = Field(default=None, nullable=True)
+    sync_origen_nodo: Optional[str] = Field(default=None, nullable=True, max_length=120)
 
 
 class ScanConfiguracionUpdate(BaseModel):
@@ -206,6 +219,11 @@ def registrar_modulo_scan_control(
         row.fecha_actualizacion = now
         row.actualizado_por = actor
         session.add(row)
+        rn_capture_sync_event(
+            session,
+            event_type="config.scan.updated",
+            local_vars=locals(),
+        )
         session.commit()
         session.refresh(row)
         return _config_payload(row)
@@ -268,6 +286,11 @@ def registrar_modulo_scan_control(
             actualizado_por=actor,
         )
         session.add(row)
+        rn_capture_sync_event(
+            session,
+            event_type="config.location.created",
+            local_vars=locals(),
+        )
         session.commit()
         session.refresh(row)
         return _ubicacion_payload(row)
@@ -281,7 +304,11 @@ def registrar_modulo_scan_control(
         rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),
     ):
         bind_operator(session, current_user, rn_empresa_id)
-        row = session.get(RackNovaUbicacionIdentidad, id_ubicacion)
+        row = session.exec(
+            select(RackNovaUbicacionIdentidad).where(
+                RackNovaUbicacionIdentidad.id_ubicacion == id_ubicacion
+            )
+        ).first()
         if row is None:
             raise HTTPException(status_code=404, detail="Ubicación no encontrada.")
 
@@ -297,6 +324,11 @@ def registrar_modulo_scan_control(
         row.fecha_actualizacion = mexico_now()
         row.actualizado_por = _usuario_nombre(current_user)
         session.add(row)
+        rn_capture_sync_event(
+            session,
+            event_type="config.location.updated",
+            local_vars=locals(),
+        )
         session.commit()
         session.refresh(row)
         return _ubicacion_payload(row)
@@ -309,12 +341,21 @@ def registrar_modulo_scan_control(
         rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),
     ):
         bind_admin(session, current_user, rn_empresa_id)
-        row = session.get(RackNovaUbicacionIdentidad, id_ubicacion)
+        row = session.exec(
+            select(RackNovaUbicacionIdentidad).where(
+                RackNovaUbicacionIdentidad.id_ubicacion == id_ubicacion
+            )
+        ).first()
         if row is None:
             raise HTTPException(status_code=404, detail="Ubicación no encontrada.")
         row.activa = False
         row.fecha_actualizacion = mexico_now()
         row.actualizado_por = _usuario_nombre(current_user)
         session.add(row)
+        rn_capture_sync_event(
+            session,
+            event_type="config.location.deactivated",
+            local_vars=locals(),
+        )
         session.commit()
         return {"ok": True, "id_ubicacion": str(row.id_ubicacion)}
