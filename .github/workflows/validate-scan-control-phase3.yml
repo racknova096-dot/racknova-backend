@@ -1,0 +1,56 @@
+name: Validate Scan Control Phase 3
+
+on:
+  push:
+    branches:
+      - feat/scan-options-location-identity
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: feat/scan-options-location-identity
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply main wiring
+        run: python scripts/patch_scan_control_main.py
+
+      - name: Compile changed Python
+        run: python -m py_compile scan_control_module.py main.py
+
+      - name: Validate routes and defaults
+        run: |
+          grep -q 'RACKNOVA_SCAN_CONTROL_FASE3' main.py
+          grep -q '/scan/configuracion' scan_control_module.py
+          grep -q '/scan/ubicaciones' scan_control_module.py
+          grep -q 'pos_verificacion_requerida: bool = False' scan_control_module.py
+          grep -q 'ubicacion_verificacion_requerida: bool = False' scan_control_module.py
+          grep -q 'hid_habilitado: bool = True' scan_control_module.py
+          grep -q 'camara_habilitada: bool = True' scan_control_module.py
+          grep -q 'RNLOC:' scan_control_module.py
+          git diff --check
+
+      - name: Commit functional wiring
+        run: |
+          if git diff --quiet -- main.py; then
+            echo "No main.py changes to commit"
+            exit 0
+          fi
+          git config user.name "racknova096-dot"
+          git config user.email "racknova096@gmail.com"
+          git add main.py
+          git diff --cached --check
+          git commit -m "feat: register optional scan controls and location identity routes"
+          git push origin HEAD:feat/scan-options-location-identity
