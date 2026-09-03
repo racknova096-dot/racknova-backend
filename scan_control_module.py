@@ -9,13 +9,12 @@ from pydantic import BaseModel, Field as PydanticField
 from sqlmodel import Field, Session, SQLModel, select
 
 from multiempresa_tenant import bind_empresa as _rn_bind_empresa
-from multiempresa_tenant import current_empresa_id as _rn_current_empresa_id
 from racknova_sync_capture import capture_operation_event as rn_capture_sync_event
 
 
 # ==========================================================
 # RACKNOVA SCAN CONTROL + LOCATION IDENTITY
-# Fase 3: capacidades opcionales, controladas por la empresa.
+# Fase 3: preferencias de escaneo locales por terminal; ubicaciones compartidas.
 # ==========================================================
 
 
@@ -208,13 +207,11 @@ def registrar_modulo_scan_control(
         actor = _usuario_nombre(current_user)
 
         if row is None:
-            # Una sola configuración lógica por empresa. Usar empresa_id como
-            # sync_uuid hace que Cloud y Local converjan aunque ambos creen su
-            # fila inicial antes de verse entre sí.
+            # Compatibilidad con dashboards anteriores: esta fila pertenece
+            # únicamente a este backend/nodo y nunca se replica por RackNova Sync.
             row = RackNovaScanConfiguracion(
                 fecha_actualizacion=now,
                 actualizado_por=actor,
-                sync_uuid=UUID(_rn_current_empresa_id(session)),
             )
 
         values = data.model_dump(exclude_none=True)
@@ -224,11 +221,7 @@ def registrar_modulo_scan_control(
         row.fecha_actualizacion = now
         row.actualizado_por = actor
         session.add(row)
-        rn_capture_sync_event(
-            session,
-            event_type="config.scan.updated",
-            local_vars=locals(),
-        )
+        # Preferencia deliberadamente local: no genera outbox ni viaja a Cloud.
         session.commit()
         session.refresh(row)
         return _config_payload(row)

@@ -45,7 +45,6 @@ COMMERCIAL_PREFIXES = (
     "rack",
     "alerta",
     "lote",
-    "racknova_scan_",
     "racknova_ubicacion_",
 )
 
@@ -57,6 +56,7 @@ EXCLUDED_TABLES = {
     "racknova_nodos",
     "racknova_sync_outbox",
     "racknova_sync_estado",
+    "racknova_scan_configuracion",
 }
 
 SENSITIVE_TOKENS = (
