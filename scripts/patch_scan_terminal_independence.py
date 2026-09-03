@@ -10,13 +10,27 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 path = Path("racknova_sync_capture.py")
 text = path.read_text(encoding="utf-8")
 text = text.replace('    "racknova_scan_",\n', '', 1)
+text = replace_once(
+    text,
+    '    "racknova_sync_estado",\n}',
+    '    "racknova_sync_estado",\n    "racknova_scan_configuracion",\n}',
+    "capture excluded tables",
+)
 path.write_text(text, encoding="utf-8")
 
 # 2) Worker must ignore scan config records while keeping RNLOC sync.
+# Explicit exclusion is necessary because the generic `rack` prefix would
+# otherwise classify racknova_scan_configuracion as commercial.
 path = Path("racknova_sync_worker.py")
 text = path.read_text(encoding="utf-8")
 text = text.replace('    "racknova_scan_",\n', '', 1)
 text = text.replace("                      OR t.table_name LIKE 'racknova_scan_%'\n", '', 1)
+text = replace_once(
+    text,
+    '    "racknova_sync_id_map",\n}',
+    '    "racknova_sync_id_map",\n    "racknova_scan_configuracion",\n}',
+    "worker excluded tables",
+)
 path.write_text(text, encoding="utf-8")
 
 # 3) The legacy backend endpoint remains compatible per backend node,
