@@ -1,0 +1,90 @@
+name: Validate Scan Config Location Sync
+
+on:
+  push:
+    branches:
+      - feat/scan-config-location-sync
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: feat/scan-config-location-sync
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply complete sync patch
+        run: python scripts/patch_scan_sync_complete.py
+
+      - name: Install runtime dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compile changed Python
+        run: python -m py_compile scan_control_module.py racknova_sync_capture.py racknova_sync_worker.py main.py
+
+      - name: Validate sync eligibility and defaults
+        run: |
+          python - <<'PY'
+          from datetime import datetime
+          import racknova_sync_worker as worker
+          import racknova_sync_capture as capture
+          from scan_control_module import RackNovaScanConfiguracion, RackNovaUbicacionIdentidad
+
+          assert worker._is_commercial_table('racknova_scan_configuracion')
+          assert worker._is_commercial_table('racknova_ubicacion_identidad')
+
+          config = RackNovaScanConfiguracion(fecha_actualizacion=datetime.now())
+          location = RackNovaUbicacionIdentidad(
+              codigo_ubicacion='RNLOC:test',
+              nombre='Rack A3',
+              fecha_creacion=datetime.now(),
+              fecha_actualizacion=datetime.now(),
+          )
+          assert capture._is_commercial_object(config)
+          assert capture._is_commercial_object(location)
+          assert config.pos_verificacion_requerida is False
+          assert config.ubicacion_verificacion_requerida is False
+          assert config.hid_habilitado is True
+          assert config.camara_habilitada is True
+          assert config.sync_uuid is not None
+          assert location.sync_uuid is not None
+          print('RackNova Scan sync runtime eligibility OK')
+          PY
+
+      - name: Validate migration and pull contract
+        run: |
+          grep -q 'UUID NOT NULL DEFAULT gen_random_uuid()' main.py
+          grep -q 'idx_racknova_scan_config_sync' main.py
+          grep -q 'idx_racknova_ubicacion_sync' main.py
+          grep -q "t.table_name LIKE 'racknova_scan_%'" racknova_sync_worker.py
+          grep -q "t.table_name LIKE 'racknova_ubicacion_%'" racknova_sync_worker.py
+          grep -q 'config.scan.updated' scan_control_module.py
+          grep -q 'config.location.created' scan_control_module.py
+          grep -q 'config.location.updated' scan_control_module.py
+          grep -q 'config.location.deactivated' scan_control_module.py
+          grep -q '"config.",' racknova_sync_worker.py
+          git diff --check
+
+      - name: Commit functional sync changes
+        run: |
+          if git diff --quiet -- main.py racknova_sync_capture.py racknova_sync_worker.py; then
+            echo "No functional patch changes to commit"
+            exit 0
+          fi
+          git config user.name "racknova096-dot"
+          git config user.email "racknova096@gmail.com"
+          git add main.py racknova_sync_capture.py racknova_sync_worker.py
+          git diff --cached --check
+          git commit -m "fix: sync scan preferences and location identities cloud local"
+          git push origin HEAD:feat/scan-config-location-sync
