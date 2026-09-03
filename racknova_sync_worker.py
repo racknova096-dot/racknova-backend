@@ -59,7 +59,6 @@ COMMERCIAL_PREFIXES = (
     "rack",
     "alerta",
     "lote",
-    "racknova_scan_",
     "racknova_ubicacion_",
 )
 
@@ -74,6 +73,7 @@ EXCLUDED_TABLES = {
     "racknova_sync_inbox",
     "racknova_sync_cursor",
     "racknova_sync_id_map",
+    "racknova_scan_configuracion",
 }
 
 # Cloud -> Local: por ahora solo datos cuyo dueño lógico puede ser Cloud.
@@ -348,7 +348,6 @@ def ensure_sync_schema(session: Session) -> None:
                       OR t.table_name LIKE 'rack%'
                       OR t.table_name LIKE 'alerta%'
                       OR t.table_name LIKE 'lote%'
-                      OR t.table_name LIKE 'racknova_scan_%'
                       OR t.table_name LIKE 'racknova_ubicacion_%'
                   )
             LOOP
