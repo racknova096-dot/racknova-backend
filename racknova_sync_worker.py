@@ -59,6 +59,8 @@ COMMERCIAL_PREFIXES = (
     "rack",
     "alerta",
     "lote",
+    "racknova_scan_",
+    "racknova_ubicacion_",
 )
 
 EXCLUDED_TABLES = {
@@ -346,6 +348,8 @@ def ensure_sync_schema(session: Session) -> None:
                       OR t.table_name LIKE 'rack%'
                       OR t.table_name LIKE 'alerta%'
                       OR t.table_name LIKE 'lote%'
+                      OR t.table_name LIKE 'racknova_scan_%'
+                      OR t.table_name LIKE 'racknova_ubicacion_%'
                   )
             LOOP
                 trigger_name := left('trg_rn_sync_touch_' || r.table_name, 63);
@@ -2236,3 +2240,5 @@ def register_sync_routes(
         # Si una versión futura de FastAPI elimina on_event, el endpoint
         # /sync/v1/run seguirá permitiendo ejecución manual.
         pass
+
+# RACKNOVA_SCAN_SYNC_COMPLETE_20260903

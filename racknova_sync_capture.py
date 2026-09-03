@@ -45,6 +45,8 @@ COMMERCIAL_PREFIXES = (
     "rack",
     "alerta",
     "lote",
+    "racknova_scan_",
+    "racknova_ubicacion_",
 )
 
 EXCLUDED_TABLES = {
@@ -802,3 +804,5 @@ def capture_operation_event(
         payload=payload,
         event_id=event_id,
     )
+
+# RACKNOVA_SCAN_SYNC_COMPLETE_20260903
