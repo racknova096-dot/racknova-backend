@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field as PydanticField
 from sqlmodel import Field, Session, SQLModel, select
 
 from multiempresa_tenant import bind_empresa as _rn_bind_empresa
+from multiempresa_tenant import current_empresa_id as _rn_current_empresa_id
 from racknova_sync_capture import capture_operation_event as rn_capture_sync_event
 
 
@@ -207,9 +208,13 @@ def registrar_modulo_scan_control(
         actor = _usuario_nombre(current_user)
 
         if row is None:
+            # Una sola configuración lógica por empresa. Usar empresa_id como
+            # sync_uuid hace que Cloud y Local converjan aunque ambos creen su
+            # fila inicial antes de verse entre sí.
             row = RackNovaScanConfiguracion(
                 fecha_actualizacion=now,
                 actualizado_por=actor,
+                sync_uuid=UUID(_rn_current_empresa_id(session)),
             )
 
         values = data.model_dump(exclude_none=True)
@@ -284,6 +289,9 @@ def registrar_modulo_scan_control(
             fecha_actualizacion=now,
             creado_por=actor,
             actualizado_por=actor,
+            # La etiqueta RNLOC se basa en id_ubicacion; reutilizamos la misma
+            # UUID como identidad B3 para conservar una identidad física única.
+            sync_uuid=location_id,
         )
         session.add(row)
         rn_capture_sync_event(

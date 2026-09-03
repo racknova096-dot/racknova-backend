@@ -711,6 +711,26 @@ def ejecutar_migraciones_ligeras():
                     "VARCHAR(120) NULL",
                 )
 
+            # Identidad determinística para convergencia Cloud <-> Local.
+            # Configuración: una sola identidad por empresa.
+            session.exec(
+                text(
+                    "UPDATE racknova_scan_configuracion "
+                    "SET sync_uuid = empresa_id "
+                    "WHERE sync_uuid IS DISTINCT FROM empresa_id;"
+                )
+            )
+            # Ubicación: la identidad física RNLOC nace de id_ubicacion.
+            session.exec(
+                text(
+                    "UPDATE racknova_ubicacion_identidad "
+                    "SET sync_uuid = id_ubicacion "
+                    "WHERE sync_uuid IS DISTINCT FROM id_ubicacion;"
+                )
+            )
+            session.commit()
+            # RACKNOVA_SCAN_SYNC_DETERMINISTIC_IDENTITY_20260903
+
         agregar_columna_si_falta(
             session,
             "producto",
