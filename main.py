@@ -171,6 +171,7 @@ class Producto(SQLModel, table=True):
     nombre: str
     descripcion: Optional[str] = None
     codigo_barras: Optional[str] = Field(default=None, index=True)
+    ubicacion_codigo: Optional[str] = Field(default=None, index=True)
     cantidad: int = 0
 
     rack: str
@@ -591,6 +592,7 @@ def crear_indices_rendimiento() -> None:
         ("producto", "idx_producto_sku_fast", ["sku"]),
         ("producto", "idx_producto_nombre_fast", ["nombre"]),
         ("producto", "idx_producto_ubicacion_fast", ["rack", "nivel", "slot"]),
+        ("producto", "idx_producto_ubicacion_codigo_fast", ["ubicacion_codigo"]),
         ("producto", "idx_producto_caducidad_fast", ["caducidad"]),
         (
             "producto_lote",
@@ -743,6 +745,13 @@ def ejecutar_migraciones_ligeras():
             "producto",
             "codigo_barras",
             "VARCHAR(128) NULL",
+        )
+
+        agregar_columna_si_falta(
+            session,
+            "producto",
+            "ubicacion_codigo",
+            "VARCHAR(160) NULL",
         )
 
         agregar_columna_si_falta(
@@ -1731,9 +1740,8 @@ def construir_resumen_inventario(
                 "sku": producto.sku,
                 "nombre": producto.nombre,
                 "ubicacion": (
-                    f"{producto.rack}-"
-                    f"{producto.nivel}-"
-                    f"{producto.slot}"
+                    producto.ubicacion_codigo
+                    or f"{producto.rack}-{producto.nivel}-{producto.slot}"
                 ),
                 "stock_actual": stock,
                 "stock_minimo": stock_minimo,
@@ -3207,6 +3215,7 @@ def crear_producto(
         producto.nombre = normalizar_texto(producto.nombre)
         producto.descripcion = normalizar_texto(producto.descripcion) or None
         producto.codigo_barras = normalizar_texto(producto.codigo_barras) or None
+        producto.ubicacion_codigo = normalizar_texto(producto.ubicacion_codigo) or None
 
         producto.rack = normalizar_texto(producto.rack)
         producto.nivel = normalizar_texto(producto.nivel)
@@ -3285,6 +3294,8 @@ def crear_producto(
             producto_existente.codigo_barras = (
                 producto.codigo_barras or producto_existente.codigo_barras
             )
+            if producto.ubicacion_codigo:
+                producto_existente.ubicacion_codigo = producto.ubicacion_codigo
             producto_existente.ultima_actualizacion = mexico_now()
 
             crear_lote(
@@ -3319,27 +3330,38 @@ def crear_producto(
         # ======================================================
         # PRODUCTO NUEVO
         # ======================================================
-        if not producto.rack or not producto.nivel or not producto.slot:
-            raise HTTPException(
-                status_code=400,
-                detail="Rack, nivel y slot son obligatorios para un producto nuevo.",
+        # RNLOC es una ubicación física libre: puede ser anaquel, refrigerador,
+        # cajón, piso, tarima, rack o cualquier lugar que el cliente elija.
+        # Rack/Nivel/Slot quedan únicamente como compatibilidad histórica.
+        if producto.ubicacion_codigo:
+            producto.rack = producto.rack or "LIBRE"
+            producto.nivel = producto.nivel or "0"
+            producto.slot = producto.slot or "0"
+        else:
+            if not producto.rack or not producto.nivel or not producto.slot:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "El producto nuevo necesita una ubicación RNLOC o una "
+                        "ubicación heredada Rack/Nivel/Slot."
+                    ),
+                )
+
+            producto_en_slot = buscar_producto_por_ubicacion(
+                session,
+                producto.rack,
+                producto.nivel,
+                producto.slot,
             )
 
-        producto_en_slot = buscar_producto_por_ubicacion(
-            session,
-            producto.rack,
-            producto.nivel,
-            producto.slot,
-        )
-
-        if producto_en_slot:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"El slot {producto.rack}-{producto.nivel}-{producto.slot} "
-                    "ya contiene un producto."
-                ),
-            )
+            if producto_en_slot:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"El slot {producto.rack}-{producto.nivel}-{producto.slot} "
+                        "ya contiene un producto."
+                    ),
+                )
 
         producto.sku = catalogo.sku
         producto.nombre = catalogo.nombre
@@ -3421,6 +3443,8 @@ def update_producto(
             normalizar_texto(updated.codigo_barras)
             or db_producto.codigo_barras
         )
+        if normalizar_texto(updated.ubicacion_codigo):
+            db_producto.ubicacion_codigo = normalizar_texto(updated.ubicacion_codigo)
 
         db_producto.stock_minimo = normalizar_stock_minimo(updated.stock_minimo)
         db_producto.stock_alto = normalizar_stock_alto(

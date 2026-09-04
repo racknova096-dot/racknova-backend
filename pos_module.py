@@ -1009,7 +1009,7 @@ def registrar_modulo_pos(
                 "cantidad": int(producto.cantidad or 0),
                 "precio_venta_sugerido": _dinero(producto.precio_venta_sugerido),
                 "costo_proveedor": _dinero(producto.costo_proveedor),
-                "ubicacion": f"{producto.rack}-{producto.nivel}-{producto.slot}",
+                "ubicacion": getattr(producto, "ubicacion_codigo", None) or f"{producto.rack}-{producto.nivel}-{producto.slot}",
                 "rack": producto.rack,
                 "nivel": producto.nivel,
                 "slot": producto.slot,
@@ -1233,7 +1233,7 @@ def registrar_modulo_pos(
                         )
                     )
 
-                ubicacion = f"{producto.rack}-{producto.nivel}-{producto.slot}"
+                ubicacion = getattr(producto, "ubicacion_codigo", None) or f"{producto.rack}-{producto.nivel}-{producto.slot}"
                 movimiento = Movimiento(
                     accion="Egreso",
                     sku=producto.sku,
