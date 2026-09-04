@@ -15,6 +15,7 @@ from sqlalchemy import text as sa_text
 from sqlmodel import Session
 
 import multiempresa_tenant as rn_tenant
+from compras_module import registrar_modulo_compras
 
 
 VALID_MODES = {"cloud", "local"}
@@ -405,3 +406,9 @@ def register_runtime_routes(
             "empresa_id": empresa_id,
             "node": node,
         }
+
+    registrar_modulo_compras(
+        app=app,
+        get_session=get_session,
+        get_current_user=get_current_user,
+    )
