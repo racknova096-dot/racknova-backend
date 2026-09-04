@@ -1,0 +1,5 @@
+RackNova Local - Final USB Installer Build
+Date: 2026-09-04
+Backend source: c3fafb095f7d2e63f6219419585e8b699b5f2a1b
+Dashboard source expected at build: 2bfcd388891aae226d14708aec56288668f5c265
+Purpose: trigger a clean native Windows installer build after the latest Compras/Proveedores and product-images updates.
