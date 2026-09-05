@@ -1,5 +1,5 @@
 #define MyAppName "RackNova Local"
-#define MyAppVersion "0.1.7-native-f1"
+#define MyAppVersion "0.1.8-native-f1"
 #define MyAppPublisher "RackNova"
 
 [Setup]
@@ -101,7 +101,7 @@ begin
     if ResultCode <> 0 then
       RaiseException(
         'RackNova no pudo completar la configuración. Código: ' +
-        IntToStr(ResultCode)
+        IntToStr(ResultCode) + '. Revisa C:\ProgramData\RackNova\Logs para ver el diagnóstico.'
       );
   end;
 end;
