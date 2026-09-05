@@ -1,0 +1,94 @@
+name: Package RackNova F1.9 Test Installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/package-racknova-f1-9-test.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      HOTFIX_ARTIFACT_ID: "9961580732"
+      PG_URL: "https://get.enterprisedb.com/postgresql/postgresql-16.15-1-windows-x64.exe"
+      PG_SHA256: "DE926FEFAD00E313E212CD438C0F04BF033E200099AD56C012724EFCEBED79F2"
+    steps:
+      - name: Checkout backend
+        uses: actions/checkout@v5
+
+      - name: Download verified F1.9 binaries artifact
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "/repos/${{ github.repository }}/actions/artifacts/$env:HOTFIX_ARTIFACT_ID/zip" > hotfix.zip
+          if (-not (Test-Path hotfix.zip)) { throw "No se descargó el artefacto F1.9" }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Expand-Archive hotfix.zip -DestinationPath dist -Force
+          if (-not (Test-Path "dist/RackNovaCtl.exe")) { throw "Falta RackNovaCtl.exe" }
+          if (-not (Test-Path "dist/RackNovaLocalService/RackNovaLocalService.exe")) { throw "Falta RackNovaLocalService.exe" }
+
+      - name: Prepare portable PostgreSQL
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          New-Item -ItemType Directory -Force native/windows/vendor | Out-Null
+          $installer = (Resolve-Path "native/windows/vendor").Path + "\postgresql-16.15-1-windows-x64.exe"
+          Invoke-WebRequest -Uri $env:PG_URL -OutFile $installer
+          $actual = (Get-FileHash $installer -Algorithm SHA256).Hash.ToUpperInvariant()
+          if ($actual -ne $env:PG_SHA256.ToUpperInvariant()) { throw "SHA256 PostgreSQL inválido: $actual" }
+
+          $nativeRoot = (Resolve-Path "native/windows").Path
+          $extractRoot = Join-Path $nativeRoot "postgres_extract"
+          $target = Join-Path $nativeRoot "postgresql_portable"
+          Remove-Item $extractRoot -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $extractRoot | Out-Null
+
+          $args = @("--extract-only", "1", "--mode", "unattended", "--unattendedmodeui", "none", "--install_runtimes", "0", "--prefix", "`"$extractRoot`"")
+          $proc = Start-Process -FilePath $installer -ArgumentList $args -PassThru
+          if (-not $proc.WaitForExit(300000)) { & taskkill.exe /PID $proc.Id /T /F | Out-Null; throw "Extracción PostgreSQL excedió 5 minutos" }
+          if ($proc.ExitCode -ne 0) { throw "PostgreSQL extract-only terminó con código $($proc.ExitCode)" }
+
+          $initdb = Get-ChildItem -Path $extractRoot -Filter initdb.exe -File -Recurse | Select-Object -First 1
+          if (-not $initdb) { throw "No se encontró initdb.exe" }
+          $pgsqlRoot = $initdb.Directory.Parent.FullName
+          New-Item -ItemType Directory -Force $target | Out-Null
+          Copy-Item (Join-Path $pgsqlRoot "*") $target -Recurse -Force
+          if (-not (Test-Path (Join-Path $target "bin\postgres.exe"))) { throw "PostgreSQL portable incompleto" }
+          Remove-Item $extractRoot -Recurse -Force
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build F1.9 test installer
+        working-directory: native/windows
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe" }
+          if (-not (Test-Path $iscc)) { throw "No encontré ISCC.exe" }
+          & $iscc RackNova.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup falló" }
+          $setup = "output/RackNova_Setup_Native_F1_9.exe"
+          if (-not (Test-Path $setup)) { throw "No se generó $setup" }
+          (Get-FileHash $setup -Algorithm SHA256).Hash | Set-Content output/SHA256.txt
+
+      - name: Upload F1.9 test installer
+        uses: actions/upload-artifact@v6
+        with:
+          name: RackNova-F1-9-TEST-INSTALLER
+          path: |
+            native/windows/output/RackNova_Setup_Native_F1_9.exe
+            native/windows/output/SHA256.txt
+          if-no-files-found: error
+          retention-days: 14
