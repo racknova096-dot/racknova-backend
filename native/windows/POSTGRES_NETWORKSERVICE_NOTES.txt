@@ -1,0 +1,1 @@
+RackNova Local 0.1.9: PostgreSQL Windows service compatibility uses NetworkService through configure_install_entry.ps1. This file documents the service-account compatibility change for clean and partial installations.
