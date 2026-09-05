@@ -540,8 +540,8 @@ jobs:
             if ($pg.State -ne "Running") {
               throw "RackNovaPostgreSQL16 no está Running: $($pg.State)"
             }
-            if ($pg.StartName -notmatch "NetworkService") {
-              throw "PostgreSQL usa una cuenta inesperada: $($pg.StartName)"
+            if ($pg.StartName -ne "LocalSystem") {
+              throw "PostgreSQL usa una cuenta inesperada. Esperado: LocalSystem Actual: $($pg.StartName)"
             }
 
             $local = Get-Service RackNovaLocal -ErrorAction Stop
@@ -563,7 +563,7 @@ jobs:
           Invoke-Setup
           Assert-RackNovaHealthy
 
-          Write-Host "=== Smoke test: simular servicio F1.8 con LocalSystem ==="
+          Write-Host "=== Smoke test: simular servicio F1.8 con LocalSystem y ACL dañada ==="
           Stop-Service RackNovaLocal -Force -ErrorAction SilentlyContinue
           Stop-Service RackNovaPostgreSQL16 -Force -ErrorAction Stop
 
@@ -572,8 +572,8 @@ jobs:
             throw "No pude simular la cuenta LocalSystem de F1.8."
           }
 
-          & icacls.exe $pgRoot /remove:g "*S-1-5-20" /T /C | Out-Null
-          & icacls.exe $pgInstall /remove:g "*S-1-5-20" /T /C | Out-Null
+          & icacls.exe $pgRoot /remove:g "*S-1-5-18" /T /C | Out-Null
+          & icacls.exe $pgInstall /remove:g "*S-1-5-18" /T /C | Out-Null
 
           Invoke-Setup
           Assert-RackNovaHealthy
