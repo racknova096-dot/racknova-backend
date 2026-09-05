@@ -1,5 +1,5 @@
 #define MyAppName "RackNova Local"
-#define MyAppVersion "0.1.8-native-f1"
+#define MyAppVersion "0.1.9-native-f1"
 #define MyAppPublisher "RackNova"
 
 [Setup]
@@ -10,7 +10,7 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\RackNova
 DefaultGroupName=RackNova
 OutputDir=output
-OutputBaseFilename=RackNova_Setup_Native_F1_7
+OutputBaseFilename=RackNova_Setup_Native_F1_9
 Compression=lzma2/ultra64
 SolidCompression=yes
 PrivilegesRequired=admin
@@ -29,6 +29,7 @@ Source: "racknova.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\dist\RackNovaCtl.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "postgresql_portable\*"; DestDir: "{app}\PostgreSQL"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "configure_install.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "configure_install_entry.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 Source: "uninstall_runtime.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 
 [Dirs]
@@ -83,7 +84,7 @@ begin
 
     Args :=
       '-NoProfile -ExecutionPolicy Bypass -File "' +
-      ExpandConstant('{app}\installer\configure_install.ps1') +
+      ExpandConstant('{app}\installer\configure_install_entry.ps1') +
       '" -InstallDir "' + ExpandConstant('{app}') + '"';
 
     if not Exec(
