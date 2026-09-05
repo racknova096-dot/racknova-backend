@@ -80,7 +80,7 @@ jobs:
 
             if ($errors.Count -gt 0) {
               $details = ($errors | ForEach-Object { $_.Message }) -join " | "
-              throw "PowerShell inválido en $script: $details"
+              throw "PowerShell inválido en ${script}: $details"
             }
           }
 
