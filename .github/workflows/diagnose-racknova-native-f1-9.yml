@@ -1,0 +1,290 @@
+name: Diagnose RackNova Native F1.9
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/diagnose-racknova-native-f1-9.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnose:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    env:
+      PG_URL: "https://get.enterprisedb.com/postgresql/postgresql-16.15-1-windows-x64.exe"
+      PG_SHA256: "DE926FEFAD00E313E212CD438C0F04BF033E200099AD56C012724EFCEBED79F2"
+      SOURCE_RUN_ID: "33946079196"
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download binaries from failed smoke-test run
+        shell: pwsh
+        run: |
+          gh run download $env:SOURCE_RUN_ID `
+            --repo "${{ github.repository }}" `
+            --name "RackNova-Native-Windows-F1-9-Hotfix-Binaries" `
+            --dir "_hotfix"
+
+          $ServiceExe = Get-ChildItem "_hotfix" -Recurse -File -Filter "RackNovaLocalService.exe" |
+            Select-Object -First 1
+          $CtlExe = Get-ChildItem "_hotfix" -Recurse -File -Filter "RackNovaCtl.exe" |
+            Select-Object -First 1
+          $Internal = Get-ChildItem "_hotfix" -Recurse -Directory -Filter "_service_internal" |
+            Select-Object -First 1
+
+          if (-not $ServiceExe -or -not $CtlExe -or -not $Internal) {
+            throw "El artefacto hotfix no contiene los binarios esperados."
+          }
+
+          New-Item -ItemType Directory -Force "dist/RackNovaLocalService/_service_internal" | Out-Null
+          Copy-Item $ServiceExe.FullName "dist/RackNovaLocalService/RackNovaLocalService.exe" -Force
+          Copy-Item $CtlExe.FullName "dist/RackNovaCtl.exe" -Force
+          Copy-Item (Join-Path $Internal.FullName "*") "dist/RackNovaLocalService/_service_internal" -Recurse -Force
+
+      - name: Prepare portable PostgreSQL
+        shell: pwsh
+        timeout-minutes: 8
+        run: |
+          $vendor = "native/windows/vendor"
+          $installer = Join-Path $vendor "postgresql-16.15-1-windows-x64.exe"
+          New-Item -ItemType Directory -Force $vendor | Out-Null
+          Invoke-WebRequest -Uri $env:PG_URL -OutFile $installer
+
+          $actual = (Get-FileHash $installer -Algorithm SHA256).Hash.ToUpperInvariant()
+          if ($actual -ne $env:PG_SHA256.ToUpperInvariant()) {
+            throw "SHA256 PostgreSQL inválido: $actual"
+          }
+
+          $nativeRoot = (Resolve-Path "native/windows").Path
+          $extractRoot = Join-Path $nativeRoot "postgres_extract"
+          $target = Join-Path $nativeRoot "postgresql_portable"
+          Remove-Item $extractRoot -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $extractRoot | Out-Null
+
+          $args = @(
+            "--extract-only", "1",
+            "--mode", "unattended",
+            "--unattendedmodeui", "none",
+            "--install_runtimes", "0",
+            "--prefix", "`"$extractRoot`""
+          )
+
+          $proc = Start-Process -FilePath (Resolve-Path $installer).Path -ArgumentList $args -PassThru
+          if (-not $proc.WaitForExit(300000)) {
+            & taskkill.exe /PID $proc.Id /T /F | Out-Null
+            throw "La extracción PostgreSQL excedió 5 minutos."
+          }
+          if ($proc.ExitCode -ne 0) {
+            throw "PostgreSQL extract-only terminó con código $($proc.ExitCode)."
+          }
+
+          $initdb = Get-ChildItem $extractRoot -Filter "initdb.exe" -File -Recurse | Select-Object -First 1
+          if (-not $initdb) {
+            throw "No apareció initdb.exe."
+          }
+
+          $pgsqlRoot = $initdb.Directory.Parent.FullName
+          New-Item -ItemType Directory -Force $target | Out-Null
+          Copy-Item (Join-Path $pgsqlRoot "*") $target -Recurse -Force
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build exact F1.9 setup
+        working-directory: native/windows
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $iscc)) {
+            throw "No encontré ISCC.exe"
+          }
+          & $iscc RackNova.iss
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup falló."
+          }
+          if (-not (Test-Path "output/RackNova_Setup_Native_F1_9.exe")) {
+            throw "No se generó el Setup."
+          }
+
+      - name: Upload exact setup under diagnosis
+        uses: actions/upload-artifact@v6
+        with:
+          name: RackNova-F1-9-Diagnostic-Setup
+          path: native/windows/output/RackNova_Setup_Native_F1_9.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Run smoke test with persistent diagnostics
+        id: smoke
+        working-directory: native/windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $Started = Get-Date
+          $diag = Join-Path (Resolve-Path "../..").Path "_smoke_logs"
+          New-Item -ItemType Directory -Force $diag | Out-Null
+          $phase = "before-install"
+          $setup = (Resolve-Path "output/RackNova_Setup_Native_F1_9.exe").Path
+          $installDir = Join-Path $env:ProgramFiles "RackNova"
+          $pgRoot = Join-Path $env:ProgramData "RackNova\PostgreSQL"
+          $pgInstall = Join-Path $installDir "PostgreSQL"
+
+          function Save-Text([string]$Name, [scriptblock]$Action) {
+            try {
+              (& $Action 2>&1 | Out-String) | Set-Content (Join-Path $diag $Name) -Encoding UTF8
+            }
+            catch {
+              ("DIAGNOSTIC COMMAND FAILED: " + $_.Exception.Message) |
+                Set-Content (Join-Path $diag $Name) -Encoding UTF8
+            }
+          }
+
+          function Collect-Diagnostics {
+            $phase | Set-Content (Join-Path $diag "phase.txt") -Encoding UTF8
+
+            Save-Text "services.txt" {
+              Get-CimInstance Win32_Service |
+                Where-Object { $_.Name -in @("RackNovaPostgreSQL16", "RackNovaLocal") } |
+                Select-Object Name, State, Status, StartMode, StartName, PathName |
+                Format-List
+            }
+
+            Save-Text "sc-postgresql-qc.txt" { & sc.exe qc RackNovaPostgreSQL16 }
+            Save-Text "sc-postgresql-query.txt" { & sc.exe queryex RackNovaPostgreSQL16 }
+            Save-Text "sc-racknova-query.txt" { & sc.exe queryex RackNovaLocal }
+            Save-Text "acl-pgroot.txt" { if (Test-Path $pgRoot) { & icacls.exe $pgRoot } else { "MISSING: $pgRoot" } }
+            Save-Text "acl-pginstall.txt" { if (Test-Path $pgInstall) { & icacls.exe $pgInstall } else { "MISSING: $pgInstall" } }
+
+            Save-Text "health.txt" {
+              try {
+                $r = Invoke-WebRequest -Uri "http://127.0.0.1:8000/racknova-native/health" -UseBasicParsing -TimeoutSec 5
+                "HTTP=$($r.StatusCode)"
+                $r.Content
+              }
+              catch {
+                "HEALTH FAILED: $($_.Exception.Message)"
+              }
+            }
+
+            Save-Text "events-system.txt" {
+              Get-WinEvent -FilterHashtable @{ LogName = "System"; StartTime = $Started } -ErrorAction SilentlyContinue |
+                Where-Object { $_.LevelDisplayName -in @("Error", "Warning") -or $_.ProviderName -eq "Service Control Manager" } |
+                Select-Object TimeCreated, ProviderName, Id, LevelDisplayName, Message |
+                Format-List
+            }
+
+            Save-Text "events-application.txt" {
+              Get-WinEvent -FilterHashtable @{ LogName = "Application"; StartTime = $Started } -ErrorAction SilentlyContinue |
+                Where-Object { $_.LevelDisplayName -in @("Error", "Warning") } |
+                Select-Object TimeCreated, ProviderName, Id, LevelDisplayName, Message |
+                Format-List
+            }
+
+            $rackLogs = Join-Path $env:ProgramData "RackNova\Logs"
+            if (Test-Path $rackLogs) {
+              Copy-Item $rackLogs (Join-Path $diag "RackNova-Logs") -Recurse -Force -ErrorAction SilentlyContinue
+            }
+
+            if (Test-Path $pgRoot) {
+              Get-ChildItem $pgRoot -Recurse -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Extension -eq ".log" -or $_.Name -match "postgres.*\.log" } |
+                Select-Object -First 20 |
+                ForEach-Object {
+                  $safe = ($_.FullName -replace '[^A-Za-z0-9._-]', '_')
+                  Copy-Item $_.FullName (Join-Path $diag $safe) -Force -ErrorAction SilentlyContinue
+                }
+            }
+          }
+
+          function Invoke-Setup {
+            $proc = Start-Process -FilePath $setup -ArgumentList @(
+              "/VERYSILENT",
+              "/SUPPRESSMSGBOXES",
+              "/NORESTART",
+              "/SP-"
+            ) -PassThru -Wait
+            if ($proc.ExitCode -ne 0) {
+              throw "RackNova Setup terminó con código $($proc.ExitCode)."
+            }
+          }
+
+          function Assert-RackNovaHealthy {
+            $pg = Get-CimInstance Win32_Service -Filter "Name='RackNovaPostgreSQL16'"
+            if (-not $pg) { throw "No existe RackNovaPostgreSQL16." }
+            if ($pg.State -ne "Running") { throw "RackNovaPostgreSQL16 no está Running: $($pg.State)" }
+            if ($pg.StartName -ne "LocalSystem") {
+              throw "Cuenta PostgreSQL inesperada: $($pg.StartName)"
+            }
+
+            $local = Get-Service RackNovaLocal -ErrorAction Stop
+            if ($local.Status -ne "Running") {
+              throw "RackNovaLocal no está Running: $($local.Status)"
+            }
+
+            $lastError = $null
+            foreach ($i in 1..12) {
+              try {
+                $response = Invoke-WebRequest -Uri "http://127.0.0.1:8000/racknova-native/health" -UseBasicParsing -TimeoutSec 5
+                if ($response.StatusCode -eq 200) { return }
+              }
+              catch {
+                $lastError = $_.Exception.Message
+              }
+              Start-Sleep -Seconds 2
+            }
+            throw "Health check no respondió 200. Último error: $lastError"
+          }
+
+          try {
+            $phase = "clean-install"
+            Invoke-Setup
+            Assert-RackNovaHealthy
+
+            $phase = "prepare-f1.8-repair"
+            Stop-Service RackNovaLocal -Force -ErrorAction SilentlyContinue
+            Stop-Service RackNovaPostgreSQL16 -Force -ErrorAction Stop
+            & sc.exe config RackNovaPostgreSQL16 obj= LocalSystem start= auto | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+              throw "No pude simular LocalSystem."
+            }
+
+            & icacls.exe $pgRoot /remove:g "*S-1-5-18" /T /C | Out-Null
+            & icacls.exe $pgInstall /remove:g "*S-1-5-18" /T /C | Out-Null
+
+            $phase = "repair-install"
+            Invoke-Setup
+            Assert-RackNovaHealthy
+            $phase = "success"
+          }
+          catch {
+            $_ | Out-String | Set-Content (Join-Path $diag "error.txt") -Encoding UTF8
+            Write-Error $_
+            exit 1
+          }
+          finally {
+            Collect-Diagnostics
+          }
+
+      - name: Upload smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: RackNova-F1-9-Smoke-Diagnostics
+          path: _smoke_logs
+          if-no-files-found: warn
+          retention-days: 7
