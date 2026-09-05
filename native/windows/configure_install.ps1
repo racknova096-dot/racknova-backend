@@ -125,7 +125,7 @@ function Protect-RackNovaBootstrapSecrets {
             node_name         = ("RackNova Local - " + $env:COMPUTERNAME)
             cloud_url         = ""
             db_port           = 54329
-            app_version       = "native-f1.7-portable"
+            app_version       = "native-f1.8-portable"
         }
 
         $Json = $BootstrapObject | ConvertTo-Json
@@ -174,7 +174,82 @@ function Wait-PostgresReady {
     throw "PostgreSQL no quedó listo en 120 segundos."
 }
 
-Write-Log "RackNova Native F1.7 portable: configuración iniciada."
+function Write-PostgresServiceDiagnostics {
+    try {
+        $ServiceConfig = (& sc.exe qc RackNovaPostgreSQL16 2>&1 | Out-String).Trim()
+        if ($ServiceConfig) {
+            Write-Log ("POSTGRES SERVICE CONFIG: " + ($ServiceConfig -replace "`r?`n", " | "))
+        }
+    }
+    catch {
+    }
+
+    try {
+        $Since = (Get-Date).AddMinutes(-5)
+        $Events = Get-WinEvent `
+            -FilterHashtable @{ LogName = "System"; StartTime = $Since } `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Message -match "RackNovaPostgreSQL16|postgres"
+            } |
+            Select-Object -First 8
+
+        foreach ($Event in $Events) {
+            $Message = ($Event.Message -replace "`r?`n", " ").Trim()
+            Write-Log ("WINDOWS EVENT {0}: {1}" -f $Event.Id, $Message)
+        }
+    }
+    catch {
+    }
+}
+
+function Ensure-PostgresServiceAccount {
+    # pg_ctl usa LocalSystem de forma nativa cuando -U se omite. Aun así,
+    # normalizamos explícitamente el servicio para reparar instalaciones
+    # parciales creadas por versiones anteriores y evitar diferencias entre
+    # ediciones/idiomas de Windows.
+    & sc.exe config `
+        RackNovaPostgreSQL16 `
+        obj= LocalSystem `
+        start= auto | Out-Null
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "No pude configurar la cuenta LocalSystem de PostgreSQL."
+    }
+}
+
+function Start-RackNovaPostgresService {
+    Ensure-PostgresServiceAccount
+
+    $Service = Get-Service `
+        -Name "RackNovaPostgreSQL16" `
+        -ErrorAction Stop
+
+    if ($Service.Status -ne "Running") {
+        Write-Log "Iniciando PostgreSQL."
+
+        try {
+            Start-Service "RackNovaPostgreSQL16" -ErrorAction Stop
+        }
+        catch {
+            Write-PostgresServiceDiagnostics
+            throw (
+                "Windows no pudo iniciar RackNovaPostgreSQL16. " +
+                "Revisa el diagnóstico agregado a $Log"
+            )
+        }
+    }
+
+    try {
+        Wait-PostgresReady
+    }
+    catch {
+        Write-PostgresServiceDiagnostics
+        throw
+    }
+}
+
+Write-Log "RackNova Native F1.8 portable: configuración iniciada."
 
 trap {
     try {
@@ -328,11 +403,12 @@ host    all    all    ::1/128         scram-sha-256
 
     Write-Log "Registrando RackNovaPostgreSQL16 con pg_ctl."
 
+    # Omitir -U es intencional: pg_ctl registra el servicio con la cuenta
+    # integrada LocalSystem sin depender de cómo Windows resuelva el nombre.
     & $PgCtl register `
         -N "RackNovaPostgreSQL16" `
         -D $PgData `
-        -S auto `
-        -U "LocalSystem"
+        -S auto
 
     if ($LASTEXITCODE -ne 0) {
         throw "pg_ctl register terminó con código $LASTEXITCODE."
@@ -345,10 +421,7 @@ host    all    all    ::1/128         scram-sha-256
 
     & sc.exe failureflag RackNovaPostgreSQL16 1 | Out-Null
 
-    Write-Log "Iniciando PostgreSQL."
-    Start-Service "RackNovaPostgreSQL16"
-
-    Wait-PostgresReady
+    Start-RackNovaPostgresService
 
     Write-Log "PostgreSQL portable listo en 127.0.0.1:54329."
 
@@ -408,11 +481,9 @@ $$;
 else {
     Write-Log "RackNovaPostgreSQL16 existente detectado."
 
-    if ($PgService.Status -ne "Running") {
-        Start-Service "RackNovaPostgreSQL16"
-    }
-
-    Wait-PostgresReady
+    # También repara una instalación parcial creada por F1.7, como el caso
+    # detectado en la PC externa durante la prueba USB.
+    Start-RackNovaPostgresService
 }
 
 Write-Log "Inicializando esquema RackNova."
@@ -524,6 +595,6 @@ if ($LASTEXITCODE -ne 0) {
     throw "RackNova Local no pasó health check. Diagnóstico: $Diag"
 }
 
-Write-Log "RackNova Native F1.7 portable instalado correctamente."
+Write-Log "RackNova Native F1.8 portable instalado correctamente."
 Write-Log "Dashboard Local: http://127.0.0.1:8000/ui/"
 exit 0
