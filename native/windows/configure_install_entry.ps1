@@ -7,26 +7,24 @@ $ErrorActionPreference = "Stop"
 
 $ProgramDataRoot = Join-Path $env:ProgramData "RackNova"
 $PgRoot = Join-Path $ProgramDataRoot "PostgreSQL"
-$PgData = Join-Path $PgRoot "data"
 $PgInstall = Join-Path $InstallDir "PostgreSQL"
 $Original = Join-Path $InstallDir "installer\configure_install.ps1"
 $Effective = Join-Path $InstallDir "installer\configure_install_effective.ps1"
 
-function Grant-NetworkServiceAccess {
-    # PostgreSQL 9.2+ on Windows is normally run as NETWORK SERVICE.  The
-    # previous RackNova F1.8 registration omitted -U, so pg_ctl registered
-    # RackNovaPostgreSQL16 as LocalSystem.  Repair both old installations and
-    # fresh installs without depending on localized Windows account names.
+function Grant-LocalSystemAccess {
+    # pg_ctl registra RackNovaPostgreSQL16 como LocalSystem cuando -U se omite.
+    # Reparamos por SID para que funcione igual en cualquier idioma de Windows
+    # y para recuperar instalaciones parciales de F1.7/F1.8/F1.9.
     if (Test-Path -LiteralPath $PgRoot) {
         & icacls.exe `
             $PgRoot `
             /grant:r `
-            "*S-1-5-20:(OI)(CI)F" `
+            "*S-1-5-18:(OI)(CI)F" `
             /T `
             /C | Out-Null
 
         if ($LASTEXITCODE -ne 0) {
-            throw "No pude dar permisos de PostgreSQL a NetworkService."
+            throw "No pude dar permisos de PostgreSQL a LocalSystem."
         }
     }
 
@@ -34,12 +32,12 @@ function Grant-NetworkServiceAccess {
         & icacls.exe `
             $PgInstall `
             /grant:r `
-            "*S-1-5-20:(OI)(CI)RX" `
+            "*S-1-5-18:(OI)(CI)RX" `
             /T `
             /C | Out-Null
 
         if ($LASTEXITCODE -ne 0) {
-            throw "No pude dar acceso a los binarios PostgreSQL a NetworkService."
+            throw "No pude dar acceso a los binarios PostgreSQL a LocalSystem."
         }
     }
 }
@@ -70,49 +68,55 @@ if (-not (Test-Path -LiteralPath $Original)) {
     throw "No existe configure_install.ps1"
 }
 
-# Repara permisos antes de tocar un servicio ya existente de F1.7/F1.8.
-Grant-NetworkServiceAccess
+# Repara primero una instalación parcial antes de intentar arrancarla.
+Grant-LocalSystemAccess
 
 $text = [System.IO.File]::ReadAllText($Original)
 
+# Mantener LocalSystem, que es la cuenta con la que pg_ctl registra el servicio
+# y la que ya fue validada en la reparación manual. Además, conservar la salida
+# real de sc.exe en el log para no volver a perder el motivo de un fallo.
 $oldServiceAccount = @'
     & sc.exe config `
         RackNovaPostgreSQL16 `
         obj= LocalSystem `
         start= auto | Out-Null
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "No pude configurar la cuenta LocalSystem de PostgreSQL."
+    }
 '@
 
 $newServiceAccount = @'
-    & sc.exe config `
+    $ServiceAccountOutput = (& sc.exe config `
         RackNovaPostgreSQL16 `
-        obj= "NT AUTHORITY\NetworkService" `
-        password= "" `
-        start= auto | Out-Null
+        obj= LocalSystem `
+        start= auto 2>&1 | Out-String).Trim()
+    $ServiceAccountExitCode = $LASTEXITCODE
+
+    if ($ServiceAccountOutput) {
+        Write-Log (
+            "POSTGRES SERVICE ACCOUNT: " +
+            ($ServiceAccountOutput -replace "`r?`n", " | ")
+        )
+    }
+
+    if ($ServiceAccountExitCode -ne 0) {
+        throw (
+            "No pude configurar la cuenta LocalSystem de PostgreSQL. " +
+            "sc.exe terminó con código $ServiceAccountExitCode."
+        )
+    }
 '@
 
 $text = Replace-RequiredText `
     -Source $text `
     -Old $oldServiceAccount `
     -New $newServiceAccount `
-    -Description "cuenta del servicio PostgreSQL"
+    -Description "configuración y diagnóstico de la cuenta LocalSystem"
 
-# En una instalación limpia PgData todavía no existía cuando este entrypoint
-# arrancó. Por eso también insertamos el SID de NetworkService en el ACL que
-# configure_install.ps1 aplica DESPUÉS de initdb y ANTES de iniciar el servicio.
-$aclAdminLine = '        "*S-1-5-32-544:(OI)(CI)F" `'
-$aclNetworkLine = '        "*S-1-5-20:(OI)(CI)F" `'
-
-if (-not $text.Contains($aclNetworkLine)) {
-    $text = Replace-RequiredText `
-        -Source $text `
-        -Old $aclAdminLine `
-        -New ($aclAdminLine + [Environment]::NewLine + $aclNetworkLine) `
-        -Description "ACL del directorio PostgreSQL"
-}
-
-# PostgreSQL/pg_ctl escribe fallos tempranos del servicio en Application. El
-# instalador anterior solo inspeccionaba System y por eso el log externo quedó
-# sin la causa real del arranque fallido.
+# PostgreSQL/pg_ctl puede escribir fallos tempranos en Application. Revisamos
+# tanto System como Application para que un fallo de arranque quede explicado.
 $oldEventFilter = '@{ LogName = "System"; StartTime = $Since }'
 $newEventFilter = '@{ LogName = @("System", "Application"); StartTime = $Since }'
 
@@ -139,9 +143,8 @@ try {
 
     $ExitCode = $LASTEXITCODE
 
-    # Si el script creó el cluster durante esta ejecución, asegura también los
-    # permisos finales. Es idempotente y repara instalaciones parciales.
-    Grant-NetworkServiceAccess
+    # Es idempotente: cubre también el cluster creado durante esta ejecución.
+    Grant-LocalSystemAccess
 
     exit $ExitCode
 }
