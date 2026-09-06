@@ -59,17 +59,23 @@ jobs:
         shell: powershell
         run: |
           $iss = Get-Content "native/windows/RackNova.iss" -Raw
-          $required = @(
+          $bootstrap = Get-Content "native/windows/bootstrap_cloud_snapshot.ps1" -Raw
+
+          $requiredIss = @(
             "reset_definitive.ps1",
             "bootstrap_cloud_snapshot.ps1",
             "Sync Secret de RackNova",
-            "native-1.0.0-definitive"
+            '#define MyAppVersion "1.0.0"'
           )
 
-          foreach ($text in $required) {
+          foreach ($text in $requiredIss) {
             if (-not $iss.Contains($text)) {
               throw "RackNova.iss no contiene referencia requerida: $text"
             }
+          }
+
+          if (-not $bootstrap.Contains("native-1.0.0-definitive")) {
+            throw "bootstrap_cloud_snapshot.ps1 no marca la versión definitiva."
           }
 
           Write-Host "Referencias del instalador definitivo: OK"
