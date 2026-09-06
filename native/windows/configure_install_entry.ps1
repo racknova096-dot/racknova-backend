@@ -12,12 +12,13 @@ $Original = Join-Path $InstallDir "installer\configure_install.ps1"
 $Effective = Join-Path $InstallDir "installer\configure_install_effective.ps1"
 
 function Grant-LocalSystemAccess {
-    # pg_ctl registra RackNovaPostgreSQL16 como LocalSystem cuando -U se omite.
-    # Reparamos por SID para que funcione igual en cualquier idioma de Windows
-    # y para recuperar instalaciones parciales de F1.7/F1.8/F1.9.
+    # PostgreSQL corre como LocalSystem. Habilitamos herencia antes de aplicar
+    # el ACE de SYSTEM para reparar también archivos de clusters creados por
+    # builds anteriores que quedaron con la herencia deshabilitada.
     if (Test-Path -LiteralPath $PgRoot) {
         & icacls.exe `
             $PgRoot `
+            /inheritance:e `
             /grant:r `
             "*S-1-5-18:(OI)(CI)F" `
             /T `
@@ -31,6 +32,7 @@ function Grant-LocalSystemAccess {
     if (Test-Path -LiteralPath $PgInstall) {
         & icacls.exe `
             $PgInstall `
+            /inheritance:e `
             /grant:r `
             "*S-1-5-18:(OI)(CI)RX" `
             /T `
@@ -68,7 +70,9 @@ if (-not (Test-Path -LiteralPath $Original)) {
     throw "No existe configure_install.ps1"
 }
 
-# Repara primero una instalación parcial antes de intentar arrancarla.
+# Crear el padre antes de la reparación hace que el cluster nuevo herede desde
+# el inicio el acceso de SYSTEM. Esto replica la reparación manual validada.
+New-Item -ItemType Directory -Force -Path $PgRoot | Out-Null
 Grant-LocalSystemAccess
 
 $text = [System.IO.File]::ReadAllText($Original)
@@ -114,6 +118,39 @@ $text = Replace-RequiredText `
     -Old $oldServiceAccount `
     -New $newServiceAccount `
     -Description "configuración y diagnóstico de la cuenta LocalSystem"
+
+# initdb crea postgresql.conf y el resto del cluster con la cuenta del
+# instalador. F1.9 estaba deshabilitando la herencia (/inheritance:r) justo
+# antes de arrancar el servicio, dejando postgresql.conf inaccesible para
+# LocalSystem en Windows Server/GitHub Runner. Mantener la herencia habilitada
+# conserva SYSTEM en cada archivo y sigue dejando control total a SYSTEM/admin.
+$oldPgDataAcl = @'
+    & icacls.exe `
+        $PgData `
+        /inheritance:r `
+        /grant:r `
+        "*S-1-5-18:(OI)(CI)F" `
+        "*S-1-5-32-544:(OI)(CI)F" `
+        /T `
+        /C | Out-Null
+'@
+
+$newPgDataAcl = @'
+    & icacls.exe `
+        $PgData `
+        /inheritance:e `
+        /grant:r `
+        "*S-1-5-18:(OI)(CI)F" `
+        "*S-1-5-32-544:(OI)(CI)F" `
+        /T `
+        /C | Out-Null
+'@
+
+$text = Replace-RequiredText `
+    -Source $text `
+    -Old $oldPgDataAcl `
+    -New $newPgDataAcl `
+    -Description "ACL heredable de PostgreSQL para LocalSystem"
 
 # PostgreSQL/pg_ctl puede escribir fallos tempranos en Application. Revisamos
 # tanto System como Application para que un fallo de arranque quede explicado.
