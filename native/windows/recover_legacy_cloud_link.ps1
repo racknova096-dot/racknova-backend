@@ -10,6 +10,7 @@ $ProgramDataRoot = Join-Path $env:ProgramData "RackNova"
 $ConfigDir = Join-Path $ProgramDataRoot "Config"
 $LogDir = Join-Path $ProgramDataRoot "Logs"
 $RecoveryRoot = Join-Path $ProgramDataRoot "RecoveryBackups"
+$ActivationBackupDir = Join-Path $ConfigDir "ActivationBackups"
 $SnapshotPath = Join-Path $ConfigDir "cloud-link-preserve.dat"
 
 New-Item -ItemType Directory -Force -Path $ConfigDir, $LogDir | Out-Null
@@ -86,36 +87,95 @@ function Save-Snapshot([hashtable]$Snapshot) {
     }
 }
 
+function Add-ActivationBackupPairs(
+    [string]$Directory,
+    [string]$LabelPrefix
+) {
+    if (-not (Test-Path -LiteralPath $Directory)) {
+        return
+    }
+
+    $Configs = Get-ChildItem `
+        -LiteralPath $Directory `
+        -Filter "config-*.json" `
+        -File `
+        -ErrorAction SilentlyContinue
+
+    foreach ($ConfigFile in $Configs) {
+        $BaseName = [System.IO.Path]::GetFileNameWithoutExtension($ConfigFile.Name)
+        if ($BaseName.Length -le 7) {
+            continue
+        }
+
+        $Stamp = $BaseName.Substring(7)
+        $SecretFile = Join-Path $Directory ("secrets-" + $Stamp + ".dat")
+        if (-not (Test-Path -LiteralPath $SecretFile)) {
+            continue
+        }
+
+        $script:CandidatePairs += [PSCustomObject]@{
+            ConfigPath = $ConfigFile.FullName
+            SecretsPath = $SecretFile
+            Label = $LabelPrefix + "/" + $Stamp
+            SortTime = $ConfigFile.LastWriteTimeUtc
+        }
+    }
+}
+
 if (Test-Path -LiteralPath $SnapshotPath) {
     Write-RecoveryLog "Ya existe un vínculo Cloud preservado para esta reparación."
     exit 0
 }
 
-if (-not (Test-Path -LiteralPath $RecoveryRoot)) {
-    Write-RecoveryLog "No existen respaldos de recuperación anteriores."
+$CandidatePairs = @()
+
+# RackNovaCtl activate-cloud guarda pares config/secrets aquí antes de modificar.
+Add-ActivationBackupPairs `
+    -Directory $ActivationBackupDir `
+    -LabelPrefix "ActivationBackups"
+
+# Los intentos de recuperación init-schema guardaron Config completo, incluido
+# ActivationBackups. Buscamos tanto el estado directo como los pares históricos.
+if (Test-Path -LiteralPath $RecoveryRoot) {
+    $RecoveryDirs = Get-ChildItem `
+        -LiteralPath $RecoveryRoot `
+        -Directory `
+        -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like "init-schema-*" }
+
+    foreach ($RecoveryDir in $RecoveryDirs) {
+        $RecoveryConfigDir = Join-Path $RecoveryDir.FullName "Config"
+        $DirectConfig = Join-Path $RecoveryConfigDir "config.json"
+        $DirectSecrets = Join-Path $RecoveryConfigDir "secrets.dat"
+
+        if ((Test-Path -LiteralPath $DirectConfig) -and
+            (Test-Path -LiteralPath $DirectSecrets)) {
+            $DirectInfo = Get-Item -LiteralPath $DirectConfig
+            $CandidatePairs += [PSCustomObject]@{
+                ConfigPath = $DirectConfig
+                SecretsPath = $DirectSecrets
+                Label = $RecoveryDir.Name + "/Config"
+                SortTime = $DirectInfo.LastWriteTimeUtc
+            }
+        }
+
+        Add-ActivationBackupPairs `
+            -Directory (Join-Path $RecoveryConfigDir "ActivationBackups") `
+            -LabelPrefix ($RecoveryDir.Name + "/ActivationBackups")
+    }
+}
+
+if (-not $CandidatePairs -or $CandidatePairs.Count -eq 0) {
+    Write-RecoveryLog "No existen respaldos anteriores con pares config/secrets."
     exit 0
 }
 
-$Candidates = Get-ChildItem `
-    -LiteralPath $RecoveryRoot `
-    -Directory `
-    -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -like "init-schema-*" } |
-    Sort-Object LastWriteTime -Descending
+$CandidatePairs = $CandidatePairs | Sort-Object SortTime -Descending
 
-foreach ($Candidate in $Candidates) {
-    $CandidateConfigDir = Join-Path $Candidate.FullName "Config"
-    $CandidateConfig = Join-Path $CandidateConfigDir "config.json"
-    $CandidateSecrets = Join-Path $CandidateConfigDir "secrets.dat"
-
-    if (-not (Test-Path -LiteralPath $CandidateConfig) -or
-        -not (Test-Path -LiteralPath $CandidateSecrets)) {
-        continue
-    }
-
+foreach ($Candidate in $CandidatePairs) {
     try {
-        $Config = Read-Config $CandidateConfig
-        $Secrets = Read-Secrets $CandidateSecrets
+        $Config = Read-Config $Candidate.ConfigPath
+        $Secrets = Read-Secrets $Candidate.SecretsPath
         $CloudUrl = ([string]($Config["cloud_url"])).Trim().TrimEnd("/")
         $Credential = ([string]($Secrets["node_credential"])).Trim()
 
@@ -140,18 +200,18 @@ foreach ($Candidate in $Candidates) {
         Save-Snapshot $Snapshot
         Write-RecoveryLog (
             "Recuperé de forma protegida un vínculo Cloud anterior desde " +
-            $Candidate.Name + " para node=" + $Snapshot["node_code"] + "."
+            $Candidate.Label + " para node=" + $Snapshot["node_code"] + "."
         )
         exit 0
     }
     catch {
         Write-RecoveryLog (
-            "No pude leer " + $Candidate.Name + ": " + $_.Exception.Message
+            "No pude leer " + $Candidate.Label + ": " + $_.Exception.Message
         )
     }
 }
 
 Write-RecoveryLog (
-    "No encontré un vínculo Cloud completo en los respaldos init-schema existentes."
+    "No encontré un vínculo Cloud completo en los respaldos disponibles."
 )
 exit 0
