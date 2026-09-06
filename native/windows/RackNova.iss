@@ -71,38 +71,19 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
-  PowerShellExe: String;
-  StopArgs: String;
+  NetExe: String;
 begin
   Result := '';
   WizardForm.StatusLabel.Caption := 'Deteniendo servicios anteriores de RackNova...';
 
-  PowerShellExe := ExpandConstant(
-    '{sys}\WindowsPowerShell\v1.0\powershell.exe'
-  );
-  StopArgs :=
-    '-NoProfile -ExecutionPolicy Bypass -Command "' +
-    'Stop-Service -Name RackNovaLocal -Force -ErrorAction SilentlyContinue; ' +
-    'Stop-Service -Name RackNovaPostgreSQL16 -Force -ErrorAction SilentlyContinue' +
-    '"';
+  NetExe := ExpandConstant('{sys}\net.exe');
 
-  if not Exec(
-    PowerShellExe,
-    StopArgs,
-    '',
-    SW_HIDE,
-    ewWaitUntilTerminated,
-    ResultCode
-  ) then
-  begin
-    Result := 'No fue posible detener los servicios anteriores de RackNova.';
-    exit;
-  end;
-
-  if ResultCode <> 0 then
-    Result :=
-      'No fue posible detener los servicios anteriores de RackNova. Código: ' +
-      IntToStr(ResultCode) + '.';
+  { net stop espera a que cada servicio libere sus archivos. Los códigos de }
+  { servicio inexistente o ya detenido son seguros y se ignoran. }
+  Exec(NetExe, 'stop RackNovaLocal /y', '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode);
+  Exec(NetExe, 'stop RackNovaPostgreSQL16 /y', '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
