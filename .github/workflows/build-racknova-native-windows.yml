@@ -535,6 +535,14 @@ jobs:
           function Assert-RackNovaHealthy {
             $pg = Get-CimInstance Win32_Service -Filter "Name='RackNovaPostgreSQL16'"
             if (-not $pg) {
+              Write-Host "=== DIAGNOSTICO POST-INSTALL ==="
+              Get-ChildItem "$env:ProgramData\RackNova\Logs" -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending |
+                Select-Object -First 8 |
+                ForEach-Object {
+                  Write-Host "===== $($_.FullName) ====="
+                  Get-Content $_.FullName -ErrorAction SilentlyContinue
+                }
               throw "No existe RackNovaPostgreSQL16 después de instalar."
             }
             if ($pg.State -ne "Running") {
