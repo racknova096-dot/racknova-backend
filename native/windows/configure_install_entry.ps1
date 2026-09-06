@@ -152,6 +152,205 @@ $text = Replace-RequiredText `
     -New $newPgDataAcl `
     -Description "ACL heredable de PostgreSQL para LocalSystem"
 
+# Una PC que ya pasó por F1.7/F1.8 puede conservar el servicio PostgreSQL y
+# secrets.dat aunque la creación de racknova/racknova_app haya quedado a medias.
+# En ese estado PostgreSQL arranca correctamente, pero RackNovaCtl init-schema
+# falla. Si la instalación todavía NO está activada con Cloud, conservamos una
+# copia completa del estado parcial y reconstruimos el runtime local desde cero.
+# El segundo intento está protegido por una bandera para evitar recursión infinita.
+$oldInitSchema = @'
+Write-Log "Inicializando esquema RackNova."
+& $Ctl init-schema
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Falló init-schema."
+}
+'@
+
+$newInitSchema = @'
+Write-Log "Inicializando esquema RackNova."
+
+$InitSchemaOutput = (& $Ctl init-schema 2>&1 | Out-String).Trim()
+$InitSchemaExitCode = $LASTEXITCODE
+
+if ($InitSchemaOutput) {
+    Write-Log (
+        "INIT-SCHEMA: " +
+        ($InitSchemaOutput -replace "`r?`n", " | ")
+    )
+}
+
+if ($InitSchemaExitCode -ne 0) {
+    if ($env:RACKNOVA_SCHEMA_RECOVERY_ATTEMPTED -eq "1") {
+        throw (
+            "Falló init-schema incluso después de reconstruir el runtime local. " +
+            "Código: $InitSchemaExitCode."
+        )
+    }
+
+    $CanRebuildLocal = $true
+    $ConfigFile = Join-Path $ConfigDir "config.json"
+
+    if (Test-Path -LiteralPath $ConfigFile) {
+        try {
+            $ExistingConfig = Get-Content `
+                -LiteralPath $ConfigFile `
+                -Raw `
+                -ErrorAction Stop | ConvertFrom-Json
+
+            if ($ExistingConfig.activated -eq $true) {
+                $CanRebuildLocal = $false
+            }
+        }
+        catch {
+            Write-Log (
+                "No pude validar config.json antes de recuperación: " +
+                $_.Exception.Message
+            )
+        }
+    }
+
+    if (-not $CanRebuildLocal) {
+        throw (
+            "Falló init-schema y esta instalación ya está activada con Cloud. " +
+            "No reconstruiré PostgreSQL automáticamente para proteger sus datos."
+        )
+    }
+
+    $RecoveryStamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $RecoveryRoot = Join-Path `
+        $ProgramDataRoot `
+        ("RecoveryBackups\init-schema-" + $RecoveryStamp)
+
+    Write-Log (
+        "Detecté una instalación local parcial anterior. " +
+        "Haré respaldo y reconstrucción automática."
+    )
+    Write-Log ("RECOVERY BACKUP: " + $RecoveryRoot)
+
+    New-Item -ItemType Directory -Force -Path $RecoveryRoot | Out-Null
+
+    if (Test-Path -LiteralPath $ConfigDir) {
+        Copy-Item `
+            -LiteralPath $ConfigDir `
+            -Destination (Join-Path $RecoveryRoot "Config") `
+            -Recurse `
+            -Force
+    }
+
+    $LocalService = Get-Service `
+        -Name "RackNovaLocal" `
+        -ErrorAction SilentlyContinue
+
+    if ($LocalService) {
+        Stop-Service `
+            -Name "RackNovaLocal" `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+        & sc.exe delete RackNovaLocal | Out-Null
+    }
+
+    $PostgresService = Get-Service `
+        -Name "RackNovaPostgreSQL16" `
+        -ErrorAction SilentlyContinue
+
+    if ($PostgresService) {
+        Stop-Service `
+            -Name "RackNovaPostgreSQL16" `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+        & sc.exe delete RackNovaPostgreSQL16 | Out-Null
+    }
+
+    foreach ($ServiceName in @("RackNovaLocal", "RackNovaPostgreSQL16")) {
+        for ($Attempt = 1; $Attempt -le 30; $Attempt++) {
+            if (-not (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)) {
+                break
+            }
+            Start-Sleep -Milliseconds 500
+        }
+
+        if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
+            throw "No pude eliminar el servicio $ServiceName durante la recuperación."
+        }
+    }
+
+    if (Test-Path -LiteralPath $PgData) {
+        & icacls.exe `
+            $PgData `
+            /inheritance:e `
+            /grant:r `
+            "*S-1-5-18:(OI)(CI)F" `
+            "*S-1-5-32-544:(OI)(CI)F" `
+            /T `
+            /C | Out-Null
+
+        $BackupPgData = Join-Path $RecoveryRoot "PostgreSQL-data"
+        Move-Item `
+            -LiteralPath $PgData `
+            -Destination $BackupPgData `
+            -Force `
+            -ErrorAction Stop
+    }
+
+    Remove-Item `
+        -LiteralPath (Join-Path $ConfigDir "secrets.dat") `
+        -Force `
+        -ErrorAction SilentlyContinue
+    Remove-Item `
+        -LiteralPath (Join-Path $ConfigDir "config.json") `
+        -Force `
+        -ErrorAction SilentlyContinue
+    Remove-Item `
+        -LiteralPath (Join-Path $ConfigDir "bootstrap-secrets.tmp.json") `
+        -Force `
+        -ErrorAction SilentlyContinue
+
+    $PreviousRecoveryFlag = $env:RACKNOVA_SCHEMA_RECOVERY_ATTEMPTED
+    $env:RACKNOVA_SCHEMA_RECOVERY_ATTEMPTED = "1"
+
+    try {
+        Write-Log "Reintentando RackNova como instalación local limpia."
+
+        & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -NoProfile `
+            -ExecutionPolicy Bypass `
+            -File $PSCommandPath `
+            -InstallDir $InstallDir
+
+        $RecoveryExitCode = $LASTEXITCODE
+    }
+    finally {
+        if ($null -eq $PreviousRecoveryFlag) {
+            Remove-Item `
+                Env:\RACKNOVA_SCHEMA_RECOVERY_ATTEMPTED `
+                -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:RACKNOVA_SCHEMA_RECOVERY_ATTEMPTED = $PreviousRecoveryFlag
+        }
+    }
+
+    if ($RecoveryExitCode -eq 0) {
+        Write-Log "Recuperación automática completada correctamente."
+        exit 0
+    }
+
+    throw (
+        "La reconstrucción automática también falló. " +
+        "Código: $RecoveryExitCode. Respaldo conservado en $RecoveryRoot"
+    )
+}
+'@
+
+$text = Replace-RequiredText `
+    -Source $text `
+    -Old $oldInitSchema `
+    -New $newInitSchema `
+    -Description "recuperación automática de init-schema"
+
 # PostgreSQL/pg_ctl puede escribir fallos tempranos en Application. Revisamos
 # tanto System como Application para que un fallo de arranque quede explicado.
 $oldEventFilter = '@{ LogName = "System"; StartTime = $Since }'
