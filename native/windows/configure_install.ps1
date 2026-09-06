@@ -499,8 +499,15 @@ else {
 }
 
 Write-Log "Inicializando esquema RackNova."
-$InitSchemaOutput = (& $Ctl init-schema 2>&1 | Out-String).Trim()
-$InitSchemaExitCode = $LASTEXITCODE
+$PreviousErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+    $InitSchemaOutput = (& $Ctl init-schema 2>&1 | Out-String).Trim()
+    $InitSchemaExitCode = $LASTEXITCODE
+}
+finally {
+    $ErrorActionPreference = $PreviousErrorActionPreference
+}
 
 if ($InitSchemaOutput) {
     Write-Log ("INIT-SCHEMA: " + ($InitSchemaOutput -replace "`r?`n", " | "))
