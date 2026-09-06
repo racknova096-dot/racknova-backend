@@ -30,7 +30,11 @@ function Quote-Ident([string]$Name) {
 }
 
 function Sql-String([string]$Value) {
-    return "'" + (($Value ?? "") -replace "'", "''") + "'"
+    $Safe = ""
+    if ($null -ne $Value) {
+        $Safe = [string]$Value
+    }
+    return "'" + ($Safe -replace "'", "''") + "'"
 }
 
 function New-JsonDollarLiteral($Value) {
@@ -192,9 +196,6 @@ try {
 
     Write-Log ("Snapshot recibido. Filas comerciales=" + $Package.total_commercial_rows)
 
-    # ------------------------------------------------------------
-    # Reconstruir tablas lazy que no existan todavía en Local.
-    # ------------------------------------------------------------
     $CreatedTables = @()
     foreach ($Item in @($Package.tables)) {
         $Table = [string]$Item.table
@@ -229,9 +230,6 @@ try {
         }
     }
 
-    # ------------------------------------------------------------
-    # Exigir base comercial fresca. No mezclamos snapshot con datos viejos.
-    # ------------------------------------------------------------
     $Infra = @(
         'empresas','empresa_usuarios','usuario','racknova_platform_admins',
         'racknova_nodos','racknova_sync_outbox','racknova_sync_estado',
@@ -270,9 +268,6 @@ ORDER BY t.table_name;
         )
     }
 
-    # ------------------------------------------------------------
-    # Limpiar únicamente residuos de inicialización e infraestructura sync.
-    # ------------------------------------------------------------
     $CleanupSql = @"
 BEGIN;
 DO `$rn`$
@@ -296,16 +291,10 @@ COMMIT;
 "@
     Invoke-PsqlScript -Sql $CleanupSql | Out-Null
 
-    # Empresa -> usuarios -> membresías.
     Insert-JsonRows -Table "empresas" -Rows @($Package.company) | Out-Null
     Insert-JsonRows -Table "usuario" -Rows @($Package.users) | Out-Null
     Insert-JsonRows -Table "empresa_usuarios" -Rows @($Package.memberships) | Out-Null
 
-    # ------------------------------------------------------------
-    # Importar tablas comerciales por rondas para respetar FKs.
-    # Cada tabla se importa en una sola transacción: si falta un padre,
-    # se revierte completa y se reintenta en la siguiente ronda.
-    # ------------------------------------------------------------
     $Pending = @(
         $Package.tables |
             Where-Object { [int]$_.row_count -gt 0 }
@@ -345,9 +334,6 @@ COMMIT;
         throw "Quedaron tablas sin importar después de 30 rondas: $Names"
     }
 
-    # ------------------------------------------------------------
-    # Alinear secuencias SERIAL/IDENTITY después de importar IDs Cloud.
-    # ------------------------------------------------------------
     $SequenceSql = @'
 DO $rn$
 DECLARE
@@ -381,10 +367,6 @@ $rn$;
 '@
     Invoke-PsqlScript -Sql $SequenceSql | Out-Null
 
-    # ------------------------------------------------------------
-    # Registrar nodo Local y colocar TODOS los cursores en el snapshot.
-    # Esto evita reproducir eventos históricos B3 y POS.
-    # ------------------------------------------------------------
     $EmpresaSql = Sql-String $EmpresaId
     $NodeCodeSql = Sql-String $NodeCode
     $NodeNameSql = Sql-String $NodeName
@@ -407,7 +389,7 @@ INSERT INTO racknova_nodos (
     version_app, ultima_conexion, creado_en, actualizado_en
 )
 VALUES (
-    $EmpresaSql::uuid, $NodeCodeSql, $NodeNameSql, 'LOCAL_SERVER', TRUE,
+    ${EmpresaSql}::uuid, $NodeCodeSql, $NodeNameSql, 'LOCAL_SERVER', TRUE,
     'native-1.0.0-definitive', NOW(), NOW(), NOW()
 )
 ON CONFLICT (empresa_id, codigo)
@@ -424,7 +406,7 @@ INSERT INTO racknova_sync_cursor (
     last_created_at, last_event_id, actualizado_en
 )
 VALUES (
-    $EmpresaSql::uuid, $NodeCodeSql, 'CLOUD_TO_LOCAL',
+    ${EmpresaSql}::uuid, $NodeCodeSql, 'CLOUD_TO_LOCAL',
     $CursorCreatedSql, $CursorEventSql, NOW()
 )
 ON CONFLICT (empresa_id, node_code, direccion)
@@ -440,7 +422,7 @@ BEGIN
             empresa_id, node_code, last_created_at, last_event_id, actualizado_en
         )
         VALUES (
-            $EmpresaSql::uuid, $NodeCodeSql,
+            ${EmpresaSql}::uuid, $NodeCodeSql,
             $CursorCreatedSql, $CursorEventSql, NOW()
         )
         ON CONFLICT (empresa_id, node_code)
@@ -457,8 +439,12 @@ COMMIT;
 
     $Config.app_version = "native-1.0.0-definitive"
     $Config.native_installer_phase = "FINAL"
-    $Config | ConvertTo-Json -Depth 20 |
-        Set-Content -LiteralPath $ConfigPath -Encoding UTF8
+    $ConfigJson = $Config | ConvertTo-Json -Depth 20
+    [System.IO.File]::WriteAllText(
+        $ConfigPath,
+        $ConfigJson + "`n",
+        (New-Object System.Text.UTF8Encoding($false))
+    )
 
     Write-Log (
         "Bootstrap Cloud completado. Tablas importadas=" + $ImportedTables +
