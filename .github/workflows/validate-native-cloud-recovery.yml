@@ -1,0 +1,65 @@
+name: Validate RackNova Native Cloud Recovery
+
+on:
+  push:
+    branches:
+      - fix/native-cloud-link-recover-legacy
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Validate PowerShell syntax
+        shell: pwsh
+        run: |
+          $scripts = @(
+            "native/windows/cloud_link.ps1",
+            "native/windows/recover_legacy_cloud_link.ps1",
+            "native/windows/configure_install.ps1",
+            "native/windows/configure_install_entry.ps1",
+            "native/windows/uninstall_runtime.ps1"
+          )
+          foreach ($script in $scripts) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script).Path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $details = ($errors | ForEach-Object { $_.Message }) -join " | "
+              throw "PowerShell inválido en ${script}: $details"
+            }
+          }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          if ($LASTEXITCODE -ne 0) { throw "No pude instalar Inno Setup." }
+
+      - name: Prepare dummy payload
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "dist/RackNovaLocalService/_service_internal" | Out-Null
+          New-Item -ItemType Directory -Force "native/windows/postgresql_portable/bin" | Out-Null
+          Set-Content "dist/RackNovaLocalService/RackNovaLocalService.exe" "dummy"
+          Set-Content "dist/RackNovaLocalService/_service_internal/dummy.txt" "dummy"
+          Set-Content "dist/RackNovaCtl.exe" "dummy"
+          Set-Content "native/windows/postgresql_portable/bin/dummy.txt" "dummy"
+
+      - name: Compile Inno script
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe" }
+          & $iscc "native/windows/RackNova.iss"
+          if ($LASTEXITCODE -ne 0) { throw "RackNova.iss no compila." }
