@@ -1,0 +1,75 @@
+name: Validate RackNova Definitive Installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "native/windows/RackNova.iss"
+      - "native/windows/reset_definitive.ps1"
+      - "native/windows/bootstrap_cloud_snapshot.ps1"
+      - ".github/workflows/validate-racknova-definitive.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout backend
+        uses: actions/checkout@v5
+
+      - name: Validate Windows PowerShell 5.1 syntax
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $scripts = @(
+            "native/windows/reset_definitive.ps1",
+            "native/windows/bootstrap_cloud_snapshot.ps1",
+            "native/windows/configure_install.ps1",
+            "native/windows/configure_install_entry.ps1",
+            "native/windows/cloud_link.ps1",
+            "native/windows/uninstall_runtime.ps1"
+          )
+
+          foreach ($script in $scripts) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script).Path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+
+            if ($errors.Count -gt 0) {
+              $details = ($errors | ForEach-Object {
+                "line $($_.Extent.StartLineNumber): $($_.Message)"
+              }) -join " | "
+              throw "PowerShell 5.1 inválido en ${script}: $details"
+            }
+
+            Write-Host "OK PowerShell 5.1: $script"
+          }
+
+      - name: Validate definitive installer references
+        shell: powershell
+        run: |
+          $iss = Get-Content "native/windows/RackNova.iss" -Raw
+          $required = @(
+            "reset_definitive.ps1",
+            "bootstrap_cloud_snapshot.ps1",
+            "Sync Secret de RackNova",
+            "native-1.0.0-definitive"
+          )
+
+          foreach ($text in $required) {
+            if (-not $iss.Contains($text)) {
+              throw "RackNova.iss no contiene referencia requerida: $text"
+            }
+          }
+
+          Write-Host "Referencias del instalador definitivo: OK"
