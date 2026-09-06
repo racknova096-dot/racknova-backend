@@ -510,13 +510,15 @@ jobs:
           $pgInstall = Join-Path $installDir "PostgreSQL"
 
           function Invoke-Setup {
+            $innoLog = Join-Path $env:RUNNER_TEMP "racknova-inno-install.log"
             $proc = Start-Process `
               -FilePath $setup `
               -ArgumentList @(
                 "/VERYSILENT",
                 "/SUPPRESSMSGBOXES",
                 "/NORESTART",
-                "/SP-"
+                "/SP-",
+                ('/LOG="' + $innoLog + '"')
               ) `
               -PassThru `
               -Wait
@@ -537,6 +539,12 @@ jobs:
             $pg = Get-CimInstance Win32_Service -Filter "Name='RackNovaPostgreSQL16'"
             if (-not $pg) {
               Write-Host "=== DIAGNOSTICO POST-INSTALL ==="
+              Write-Host "=== ARCHIVOS INSTALADOS ==="
+              Get-ChildItem $installDir -Recurse -ErrorAction SilentlyContinue |
+                Select-Object FullName, Length | Format-Table -AutoSize
+              Write-Host "=== INNO SETUP LOG ==="
+              Get-Content (Join-Path $env:RUNNER_TEMP "racknova-inno-install.log") `
+                -ErrorAction SilentlyContinue
               Get-ChildItem "$env:ProgramData\RackNova\Logs" -ErrorAction SilentlyContinue |
                 Sort-Object LastWriteTime -Descending |
                 Select-Object -First 8 |
