@@ -209,7 +209,6 @@ begin
     InstallDir := ExpandConstant('{app}');
     CloudLinkScript := ExpandConstant('{app}\installer\cloud_link.ps1');
 
-    { Preservar cualquier vínculo Cloud existente antes de reparar/recrear local. }
     RunCloudLinkStep(
       PowerShellExe,
       CloudLinkScript,
@@ -247,7 +246,6 @@ begin
         IntToStr(ResultCode) + '. Revisa C:\ProgramData\RackNova\Logs para ver el diagnóstico.'
       );
 
-    { Si una reparación reemplazó config/secrets, restaurar el vínculo protegido. }
     RunCloudLinkStep(
       PowerShellExe,
       CloudLinkScript,
@@ -262,7 +260,7 @@ begin
         'RackNova Local quedó instalado, pero no pude restaurar la conexión Cloud anterior.'
       );
 
-    if CloudChoicePage.Values[0] then
+    if CloudChoicePage.Values[0] and (not WizardSilent) then
     begin
       WizardForm.StatusLabel.Caption := 'Conectando RackNova Local con Cloud...';
       CloudUrl := Trim(CloudConfigPage.Values[0]);
