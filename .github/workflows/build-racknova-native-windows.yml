@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - fix/f1-9-direct-installer-recovery
 
 permissions:
   contents: read
