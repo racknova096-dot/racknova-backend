@@ -1,5 +1,5 @@
 #define MyAppName "RackNova Local"
-#define MyAppVersion "0.1.9-native-f1"
+#define MyAppVersion "1.0.0"
 #define MyAppPublisher "RackNova"
 
 [Setup]
@@ -10,6 +10,8 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\RackNova
 DefaultGroupName=RackNova
 OutputDir=output
+; Se conserva el nombre técnico F1_9 para no romper el workflow existente.
+; El artefacto publicado para usuario se renombra a RackNova_Setup_Definitivo.exe.
 OutputBaseFilename=RackNova_Setup_Native_F1_9
 Compression=lzma2/ultra64
 SolidCompression=yes
@@ -21,6 +23,9 @@ SetupIconFile=racknova.ico
 DisableProgramGroupPage=yes
 SetupLogging=yes
 UninstallDisplayIcon={app}\racknova.ico
+CloseApplications=force
+RestartApplications=no
+UsePreviousAppDir=yes
 
 [Files]
 Source: "..\..\dist\RackNovaLocalService\RackNovaLocalService.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -32,6 +37,8 @@ Source: "configure_install.ps1"; DestDir: "{app}\installer"; Flags: ignoreversio
 Source: "configure_install_entry.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 Source: "cloud_link.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 Source: "recover_legacy_cloud_link.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "reset_definitive.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "bootstrap_cloud_snapshot.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 Source: "uninstall_runtime.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 
 [Dirs]
@@ -49,6 +56,9 @@ Filename: "{group}\RackNova.url"; Section: "InternetShortcut"; Key: "URL"; Strin
 Filename: "{group}\RackNova.url"; Section: "InternetShortcut"; Key: "IconFile"; String: "{app}\racknova.ico"
 Filename: "{group}\RackNova.url"; Section: "InternetShortcut"; Key: "IconIndex"; String: "0"
 
+[Run]
+Filename: "http://127.0.0.1:8000/ui/"; Description: "Abrir RackNova Local"; Flags: shellexec postinstall skipifsilent nowait
+
 [UninstallRun]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
     Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\uninstall_runtime.ps1"""; \
@@ -60,50 +70,82 @@ Type: files; Name: "{group}\RackNova.url"
 
 [Code]
 var
-  CloudChoicePage: TInputOptionWizardPage;
   CloudConfigPage: TInputQueryWizardPage;
+  MigrationPage: TInputOptionWizardPage;
+  ExistingInstall: Boolean;
 
 function SetEnvironmentVariable(lpName, lpValue: String): Boolean;
 external 'SetEnvironmentVariableW@Kernel32.dll stdcall delayload';
 
+function DetectExistingInstall(): Boolean;
+begin
+  Result :=
+    FileExists(ExpandConstant('{commonappdata}\RackNova\Config\config.json')) or
+    DirExists(ExpandConstant('{commonappdata}\RackNova\PostgreSQL\data')) or
+    FileExists(ExpandConstant('{autopf}\RackNova\RackNovaLocalService.exe'));
+end;
+
+function ShouldCleanReset(): Boolean;
+var
+  SilentValue: String;
+begin
+  if not ExistingInstall then
+  begin
+    Result := False;
+    Exit;
+  end;
+
+  if WizardSilent then
+  begin
+    SilentValue := ExpandConstant('{param:CLEANLOCAL|0}');
+    Result := CompareText(Trim(SilentValue), '1') = 0;
+    Exit;
+  end;
+
+  Result := MigrationPage.Values[0];
+end;
+
+function ShouldBootstrapCloud(): Boolean;
+begin
+  Result := (not ExistingInstall) or ShouldCleanReset();
+end;
+
 procedure InitializeWizard();
 var
-  ExistingNativeConfig: Boolean;
+  PreviousPageId: Integer;
 begin
-  ExistingNativeConfig := FileExists(
-    ExpandConstant('{commonappdata}\RackNova\Config\config.json')
-  );
+  ExistingInstall := DetectExistingInstall();
+  PreviousPageId := wpSelectDir;
 
-  CloudChoicePage := CreateInputOptionPage(
-    wpSelectDir,
-    'RackNova Cloud',
-    'Conecta RackNova Local con tu cuenta Cloud',
-    'En una instalación nueva puedes vincular Cloud ahora. En una actualización o reparación, RackNova intentará restaurar automáticamente la conexión Cloud anterior.',
-    False,
-    False
-  );
-  CloudChoicePage.Add('Conectar este equipo con RackNova Cloud');
-  CloudChoicePage.Values[0] := not ExistingNativeConfig;
+  if ExistingInstall then
+  begin
+    MigrationPage := CreateInputOptionPage(
+      wpSelectDir,
+      'Instalación anterior detectada',
+      'Actualizar RackNova Local de forma segura',
+      'Para esta transición a la versión definitiva se recomienda reconstruir la base Local desde el estado actual de Cloud. Antes de hacerlo, el instalador conserva un respaldo completo de la configuración y del cluster PostgreSQL anterior.',
+      False,
+      False
+    );
+    MigrationPage.Add(
+      'Crear respaldo y reconstruir la base Local desde RackNova Cloud (recomendado)'
+    );
+    MigrationPage.Values[0] := True;
+    PreviousPageId := MigrationPage.ID;
+  end;
 
   CloudConfigPage := CreateInputQueryPage(
-    CloudChoicePage.ID,
+    PreviousPageId,
     'Conexión con RackNova Cloud',
-    'Datos de sincronización',
-    'El secreto no se guarda en el log del instalador. Si esta PC ya estaba vinculada, normalmente no necesitas volver a escribirlo.'
+    'Activa este equipo durante la instalación',
+    'Introduce los datos de RackNova Cloud. El Sync Secret se oculta, no se escribe en el log del instalador y se guarda después protegido por Windows DPAPI.'
   );
   CloudConfigPage.Add('URL de RackNova Cloud:', False);
   CloudConfigPage.Values[0] := 'https://racknova-backend-1.onrender.com';
   CloudConfigPage.Add('ID de empresa:', False);
   CloudConfigPage.Values[1] := '11111111-1111-4111-8111-111111111111';
-  CloudConfigPage.Add('RACKNOVA_SYNC_SECRET:', True);
+  CloudConfigPage.Add('Sync Secret de RackNova:', True);
   CloudConfigPage.Values[2] := '';
-end;
-
-function ShouldSkipPage(PageID: Integer): Boolean;
-begin
-  Result := False;
-  if (PageID = CloudConfigPage.ID) and (not CloudChoicePage.Values[0]) then
-    Result := True;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -114,7 +156,7 @@ var
 begin
   Result := True;
 
-  if (CurPageID = CloudConfigPage.ID) and CloudChoicePage.Values[0] then
+  if CurPageID = CloudConfigPage.ID then
   begin
     CloudUrl := Trim(CloudConfigPage.Values[0]);
     EmpresaId := Trim(CloudConfigPage.Values[1]);
@@ -127,7 +169,7 @@ begin
       Exit;
     end;
 
-    if Length(EmpresaId) < 32 then
+    if (Length(EmpresaId) < 32) or (Pos('-', EmpresaId) = 0) then
     begin
       MsgBox('El ID de empresa no parece un UUID válido.', mbError, MB_OK);
       Result := False;
@@ -136,7 +178,7 @@ begin
 
     if Length(SyncSecret) < 20 then
     begin
-      MsgBox('RACKNOVA_SYNC_SECRET debe tener al menos 20 caracteres.', mbError, MB_OK);
+      MsgBox('El Sync Secret debe tener al menos 20 caracteres.', mbError, MB_OK);
       Result := False;
       Exit;
     end;
@@ -153,7 +195,6 @@ end;
 function InitializeSetup(): Boolean;
 begin
   Result := True;
-
   if not IsWin64 then
   begin
     MsgBox('RackNova Local requiere Windows de 64 bits.', mbError, MB_OK);
@@ -161,28 +202,49 @@ begin
   end;
 end;
 
-procedure RunCloudLinkStep(
-  PowerShellExe: String;
-  CloudLinkScript: String;
+procedure StopServiceForUpgrade(ServiceName: String);
+var
+  ResultCode: Integer;
+begin
+  Exec(
+    ExpandConstant('{sys}\sc.exe'),
+    'stop ' + ServiceName,
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  );
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  NeedsRestart := False;
+
+  if ExistingInstall then
+  begin
+    WizardForm.StatusLabel.Caption := 'Deteniendo servicios de RackNova...';
+    StopServiceForUpgrade('RackNovaLocal');
+    StopServiceForUpgrade('RackNovaPostgreSQL16');
+    Sleep(5000);
+  end;
+end;
+
+procedure RunPowerShellScript(
+  ScriptPath: String;
   InstallDir: String;
-  Mode: String;
-  CloudUrl: String;
-  EmpresaId: String;
   var ResultCode: Integer
 );
 var
+  PowerShellExe: String;
   Args: String;
 begin
+  PowerShellExe := ExpandConstant(
+    '{sys}\WindowsPowerShell\v1.0\powershell.exe'
+  );
   Args :=
-    '-NoProfile -ExecutionPolicy Bypass -File "' + CloudLinkScript +
-    '" -Mode ' + Mode +
-    ' -InstallDir "' + InstallDir + '"';
-
-  if CloudUrl <> '' then
-    Args := Args + ' -CloudUrl "' + CloudUrl + '"';
-
-  if EmpresaId <> '' then
-    Args := Args + ' -EmpresaId "' + EmpresaId + '"';
+    '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath +
+    '" -InstallDir "' + InstallDir + '"';
 
   if not Exec(
     PowerShellExe,
@@ -192,128 +254,144 @@ begin
     ewWaitUntilTerminated,
     ResultCode
   ) then
-    RaiseException('No fue posible iniciar la configuración de RackNova Cloud.');
+    RaiseException('No fue posible iniciar un componente interno de instalación.');
+end;
+
+procedure RunCloudActivation(
+  InstallDir: String;
+  CloudUrl: String;
+  EmpresaId: String;
+  var ResultCode: Integer
+);
+var
+  PowerShellExe: String;
+  ScriptPath: String;
+  Args: String;
+begin
+  PowerShellExe := ExpandConstant(
+    '{sys}\WindowsPowerShell\v1.0\powershell.exe'
+  );
+  ScriptPath := ExpandConstant('{app}\installer\cloud_link.ps1');
+  Args :=
+    '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath +
+    '" -Mode Activate -InstallDir "' + InstallDir +
+    '" -CloudUrl "' + CloudUrl +
+    '" -EmpresaId "' + EmpresaId + '"';
+
+  if not Exec(
+    PowerShellExe,
+    Args,
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  ) then
+    RaiseException('No fue posible iniciar la activación de RackNova Cloud.');
+end;
+
+procedure RestartRackNovaLocal();
+var
+  ResultCode: Integer;
+begin
+  Exec(
+    ExpandConstant('{sys}\sc.exe'),
+    'stop RackNovaLocal',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  );
+  Sleep(1500);
+  Exec(
+    ExpandConstant('{sys}\sc.exe'),
+    'start RackNovaLocal',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  );
+end;
+
+function WaitForRackNovaHealth(InstallDir: String): Boolean;
+var
+  Attempt: Integer;
+  ResultCode: Integer;
+begin
+  Result := False;
+  for Attempt := 1 to 12 do
+  begin
+    Sleep(2500);
+    if Exec(
+      InstallDir + '\RackNovaCtl.exe',
+      'health',
+      '',
+      SW_HIDE,
+      ewWaitUntilTerminated,
+      ResultCode
+    ) and (ResultCode = 0) then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
-  RecoveryResultCode: Integer;
-  PowerShellExe: String;
-  Args: String;
+  BootstrapResultCode: Integer;
   InstallDir: String;
-  CloudLinkScript: String;
-  LegacyRecoveryScript: String;
   CloudUrl: String;
   EmpresaId: String;
   SyncSecret: String;
-  PreservedCloudLink: Boolean;
+  ResetRequested: Boolean;
 begin
   if CurStep = ssPostInstall then
   begin
-    WizardForm.StatusLabel.Caption := 'Configurando RackNova Local...';
-
-    PowerShellExe := ExpandConstant(
-      '{sys}\WindowsPowerShell\v1.0\powershell.exe'
-    );
     InstallDir := ExpandConstant('{app}');
-    CloudLinkScript := ExpandConstant('{app}\installer\cloud_link.ps1');
-    LegacyRecoveryScript := ExpandConstant(
-      '{app}\installer\recover_legacy_cloud_link.ps1'
-    );
+    ResetRequested := ShouldCleanReset();
 
-    RunCloudLinkStep(
-      PowerShellExe,
-      CloudLinkScript,
-      InstallDir,
-      'Backup',
-      '',
-      '',
-      ResultCode
-    );
-    if ResultCode <> 0 then
-      RaiseException(
-        'No pude respaldar la conexión Cloud anterior. La instalación se detuvo para no perderla.'
-      );
-
-    PreservedCloudLink := FileExists(
-      ExpandConstant('{commonappdata}\RackNova\Config\cloud-link-preserve.dat')
-    );
-
-    if not PreservedCloudLink then
+    if ResetRequested then
     begin
-      Args :=
-        '-NoProfile -ExecutionPolicy Bypass -File "' +
-        LegacyRecoveryScript +
-        '" -InstallDir "' + InstallDir + '"';
-
-      if Exec(
-        PowerShellExe,
-        Args,
-        '',
-        SW_HIDE,
-        ewWaitUntilTerminated,
-        RecoveryResultCode
-      ) then
-        PreservedCloudLink := FileExists(
-          ExpandConstant('{commonappdata}\RackNova\Config\cloud-link-preserve.dat')
+      WizardForm.StatusLabel.Caption := 'Respaldando la instalación anterior...';
+      RunPowerShellScript(
+        ExpandConstant('{app}\installer\reset_definitive.ps1'),
+        InstallDir,
+        ResultCode
+      );
+      if ResultCode <> 0 then
+        RaiseException(
+          'No pude respaldar y preparar la instalación anterior. No se eliminó el respaldo. Revisa C:\ProgramData\RackNova\Logs.'
         );
     end;
 
-    Args :=
-      '-NoProfile -ExecutionPolicy Bypass -File "' +
-      ExpandConstant('{app}\installer\configure_install_entry.ps1') +
-      '" -InstallDir "' + InstallDir + '"';
-
-    if not Exec(
-      PowerShellExe,
-      Args,
-      '',
-      SW_HIDE,
-      ewWaitUntilTerminated,
-      ResultCode
-    ) then
-      RaiseException(
-        'No fue posible iniciar la configuración de RackNova.'
-      );
-
-    if ResultCode <> 0 then
-      RaiseException(
-        'RackNova no pudo completar la configuración. Código: ' +
-        IntToStr(ResultCode) + '. Revisa C:\ProgramData\RackNova\Logs para ver el diagnóstico.'
-      );
-
-    RunCloudLinkStep(
-      PowerShellExe,
-      CloudLinkScript,
+    WizardForm.StatusLabel.Caption := 'Configurando RackNova Local...';
+    RunPowerShellScript(
+      ExpandConstant('{app}\installer\configure_install_entry.ps1'),
       InstallDir,
-      'Restore',
-      '',
-      '',
       ResultCode
     );
     if ResultCode <> 0 then
       RaiseException(
-        'RackNova Local quedó instalado, pero no pude restaurar la conexión Cloud anterior.'
+        'RackNova no pudo completar la configuración local. Código: ' +
+        IntToStr(ResultCode) + '. Revisa C:\ProgramData\RackNova\Logs.'
       );
 
-    if CloudChoicePage.Values[0] and (not WizardSilent) and
-       (not PreservedCloudLink) then
+    ; El smoke test del workflow usa /VERYSILENT y valida únicamente el runtime.
+    ; La activación Cloud siempre se realiza en el asistente interactivo normal.
+    if not WizardSilent then
     begin
-      WizardForm.StatusLabel.Caption := 'Conectando RackNova Local con Cloud...';
       CloudUrl := Trim(CloudConfigPage.Values[0]);
       EmpresaId := Trim(CloudConfigPage.Values[1]);
       SyncSecret := Trim(CloudConfigPage.Values[2]);
 
+      WizardForm.StatusLabel.Caption := 'Activando RackNova Cloud...';
       if not SetEnvironmentVariable('RACKNOVA_INSTALL_SYNC_SECRET', SyncSecret) then
         RaiseException('No pude preparar de forma segura la credencial Cloud.');
 
       try
-        RunCloudLinkStep(
-          PowerShellExe,
-          CloudLinkScript,
+        RunCloudActivation(
           InstallDir,
-          'Activate',
           CloudUrl,
           EmpresaId,
           ResultCode
@@ -324,8 +402,37 @@ begin
 
       if ResultCode <> 0 then
         RaiseException(
-          'RackNova Local quedó instalado, pero la conexión con RackNova Cloud falló. ' +
-          'Revisa C:\ProgramData\RackNova\Logs\cloud-link-*.log.'
+          'La instalación local terminó, pero RackNova Cloud rechazó la activación. Revisa los datos ingresados y C:\ProgramData\RackNova\Logs.'
+        );
+
+      if ShouldBootstrapCloud() then
+      begin
+        WizardForm.StatusLabel.Caption := 'Descargando estado actual desde RackNova Cloud...';
+        StopServiceForUpgrade('RackNovaLocal');
+        Sleep(1500);
+
+        RunPowerShellScript(
+          ExpandConstant('{app}\installer\bootstrap_cloud_snapshot.ps1'),
+          InstallDir,
+          BootstrapResultCode
+        );
+
+        RestartRackNovaLocal();
+
+        if BootstrapResultCode <> 0 then
+          RaiseException(
+            'RackNova quedó activado, pero no pude importar el snapshot actual de Cloud. El respaldo anterior permanece en C:\ProgramData\RackNova\Backups.'
+          );
+      end
+      else
+      begin
+        RestartRackNovaLocal();
+      end;
+
+      WizardForm.StatusLabel.Caption := 'Verificando RackNova Local...';
+      if not WaitForRackNovaHealth(InstallDir) then
+        RaiseException(
+          'La instalación terminó, pero RackNova Local no respondió correctamente al chequeo final. Revisa C:\ProgramData\RackNova\Logs.'
         );
     end;
   end;
