@@ -17,6 +17,62 @@ POS_BACKFILL_PAGE_SIZE = 100
 POS_BACKFILL_MAX_PAGES_PER_RUN = 3
 
 
+NATURAL_KEY_BY_TABLE = {
+    "producto": ("sku",),
+    "producto_catalogo": ("sku",),
+    "pos_producto_configuracion": ("sku",),
+    "pos_mayoreo_menudeo": ("sku",),
+}
+
+
+def _current_row_for_legacy_record(
+    session: Session,
+    *,
+    empresa_id: str,
+    table: str,
+    source_pk: dict[str, Any],
+    data: dict[str, Any],
+) -> dict[str, Any] | None:
+    """
+    Intenta resolver una fila histórica primero por su PK original y, solo en
+    tablas con clave natural explícita, por esa identidad lógica dentro de la
+    misma empresa.
+
+    Esto cubre registros de producto cuyo id serial histórico ya no existe,
+    pero cuyo SKU sigue representando el mismo producto de la empresa.
+    """
+    if source_pk:
+        try:
+            current = worker._row_by_pk(
+                session,
+                table=table,
+                empresa_id=empresa_id,
+                pk=source_pk,
+            )
+        except Exception:
+            current = None
+        if current:
+            return current
+
+    for key in NATURAL_KEY_BY_TABLE.get(table, ()):
+        value = data.get(key)
+        if value in {None, ""}:
+            continue
+        try:
+            current = worker._row_by_pk(
+                session,
+                table=table,
+                empresa_id=empresa_id,
+                pk={key: value},
+            )
+        except Exception:
+            current = None
+        if current:
+            return current
+
+    return None
+
+
 def _repair_missing_sync_uuid(
     session: Session,
     *,
@@ -25,13 +81,12 @@ def _repair_missing_sync_uuid(
 ) -> list[dict[str, Any]]:
     """
     Repara únicamente eventos históricos NO-DELETE cuyo snapshot perdió
-    sync_uuid, pero conserva una PK suficiente para identificar la fila actual
-    en Cloud.
+    sync_uuid.
 
-    No inventamos identidades ni adelantamos cursores. La identidad se toma de
-    la fila actual de la misma empresa/tabla y el resto del payload histórico
-    permanece intacto. Si no podemos comprobar la fila, dejamos el evento tal
-    cual para que B3 siga fallando de forma visible en lugar de perder datos.
+    Primero intenta la PK histórica. Si esa fila ya no existe, para tablas con
+    una clave natural explícita (por ejemplo producto.sku) busca la fila actual
+    dentro de la misma empresa. No inventamos identidades ni adelantamos
+    cursores: el sync_uuid siempre se toma de una fila Cloud comprobada.
     """
     repaired_events: list[dict[str, Any]] = []
 
@@ -63,17 +118,14 @@ def _repair_missing_sync_uuid(
                 table = str(record.get("table") or "")
                 source_pk = dict(record.get("pk") or {})
 
-                if worker._is_commercial_table(table) and source_pk:
-                    try:
-                        current = worker._row_by_pk(
-                            session,
-                            table=table,
-                            empresa_id=empresa_id,
-                            pk=source_pk,
-                        )
-                    except Exception:
-                        current = None
-
+                if worker._is_commercial_table(table):
+                    current = _current_row_for_legacy_record(
+                        session,
+                        empresa_id=empresa_id,
+                        table=table,
+                        source_pk=source_pk,
+                        data=data,
+                    )
                     current_sync_uuid = (
                         current.get("sync_uuid")
                         if current
