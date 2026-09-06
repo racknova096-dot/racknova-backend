@@ -5,6 +5,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 
 $ProgramDataRoot = Join-Path $env:ProgramData "RackNova"
 $ConfigDir = Join-Path $ProgramDataRoot "Config"
