@@ -68,6 +68,43 @@ begin
   end;
 end;
 
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+  PowerShellExe: String;
+  StopArgs: String;
+begin
+  Result := '';
+  WizardForm.StatusLabel.Caption := 'Deteniendo servicios anteriores de RackNova...';
+
+  PowerShellExe := ExpandConstant(
+    '{sys}\WindowsPowerShell\v1.0\powershell.exe'
+  );
+  StopArgs :=
+    '-NoProfile -ExecutionPolicy Bypass -Command "' +
+    'Stop-Service -Name RackNovaLocal -Force -ErrorAction SilentlyContinue; ' +
+    'Stop-Service -Name RackNovaPostgreSQL16 -Force -ErrorAction SilentlyContinue' +
+    '"';
+
+  if not Exec(
+    PowerShellExe,
+    StopArgs,
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  ) then
+  begin
+    Result := 'No fue posible detener los servicios anteriores de RackNova.';
+    exit;
+  end;
+
+  if ResultCode <> 0 then
+    Result :=
+      'No fue posible detener los servicios anteriores de RackNova. Código: ' +
+      IntToStr(ResultCode) + '.';
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
