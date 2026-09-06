@@ -15,6 +15,17 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+
+def _configure_utf8_streams() -> None:
+    """Avoid cp1252 crashes when imported modules print Unicode on Windows."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
+_configure_utf8_streams()
+
 from racknova_native_config import (
     DEFAULT_DB_PORT,
     DEFAULT_EMPRESA_ID,
