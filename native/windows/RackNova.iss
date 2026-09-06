@@ -31,6 +31,7 @@ Source: "postgresql_portable\*"; DestDir: "{app}\PostgreSQL"; Flags: ignoreversi
 Source: "configure_install.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 Source: "configure_install_entry.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 Source: "cloud_link.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "recover_legacy_cloud_link.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 Source: "uninstall_runtime.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 
 [Dirs]
@@ -66,23 +67,29 @@ function SetEnvironmentVariable(lpName, lpValue: String): Boolean;
 external 'SetEnvironmentVariableW@Kernel32.dll stdcall delayload';
 
 procedure InitializeWizard();
+var
+  ExistingNativeConfig: Boolean;
 begin
+  ExistingNativeConfig := FileExists(
+    ExpandConstant('{commonappdata}\RackNova\Config\config.json')
+  );
+
   CloudChoicePage := CreateInputOptionPage(
     wpSelectDir,
     'RackNova Cloud',
     'Conecta RackNova Local con tu cuenta Cloud',
-    'RackNova Local seguirá funcionando sin Internet. Si conectas Cloud, los cambios podrán sincronizarse cuando haya conexión.',
+    'En una instalación nueva puedes vincular Cloud ahora. En una actualización o reparación, RackNova intentará restaurar automáticamente la conexión Cloud anterior.',
     False,
     False
   );
   CloudChoicePage.Add('Conectar este equipo con RackNova Cloud');
-  CloudChoicePage.Values[0] := True;
+  CloudChoicePage.Values[0] := not ExistingNativeConfig;
 
   CloudConfigPage := CreateInputQueryPage(
     CloudChoicePage.ID,
     'Conexión con RackNova Cloud',
     'Datos de sincronización',
-    'Usa los mismos datos con los que ya vinculabas RackNova Local. El secreto no se guarda en el log del instalador.'
+    'El secreto no se guarda en el log del instalador. Si esta PC ya estaba vinculada, normalmente no necesitas volver a escribirlo.'
   );
   CloudConfigPage.Add('URL de RackNova Cloud:', False);
   CloudConfigPage.Values[0] := 'https://racknova-backend-1.onrender.com';
@@ -191,13 +198,16 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
+  RecoveryResultCode: Integer;
   PowerShellExe: String;
   Args: String;
   InstallDir: String;
   CloudLinkScript: String;
+  LegacyRecoveryScript: String;
   CloudUrl: String;
   EmpresaId: String;
   SyncSecret: String;
+  PreservedCloudLink: Boolean;
 begin
   if CurStep = ssPostInstall then
   begin
@@ -208,6 +218,9 @@ begin
     );
     InstallDir := ExpandConstant('{app}');
     CloudLinkScript := ExpandConstant('{app}\installer\cloud_link.ps1');
+    LegacyRecoveryScript := ExpandConstant(
+      '{app}\installer\recover_legacy_cloud_link.ps1'
+    );
 
     RunCloudLinkStep(
       PowerShellExe,
@@ -222,6 +235,30 @@ begin
       RaiseException(
         'No pude respaldar la conexión Cloud anterior. La instalación se detuvo para no perderla.'
       );
+
+    PreservedCloudLink := FileExists(
+      ExpandConstant('{commonappdata}\RackNova\Config\cloud-link-preserve.dat')
+    );
+
+    if not PreservedCloudLink then
+    begin
+      Args :=
+        '-NoProfile -ExecutionPolicy Bypass -File "' +
+        LegacyRecoveryScript +
+        '" -InstallDir "' + InstallDir + '"';
+
+      if Exec(
+        PowerShellExe,
+        Args,
+        '',
+        SW_HIDE,
+        ewWaitUntilTerminated,
+        RecoveryResultCode
+      ) then
+        PreservedCloudLink := FileExists(
+          ExpandConstant('{commonappdata}\RackNova\Config\cloud-link-preserve.dat')
+        );
+    end;
 
     Args :=
       '-NoProfile -ExecutionPolicy Bypass -File "' +
@@ -260,7 +297,8 @@ begin
         'RackNova Local quedó instalado, pero no pude restaurar la conexión Cloud anterior.'
       );
 
-    if CloudChoicePage.Values[0] and (not WizardSilent) then
+    if CloudChoicePage.Values[0] and (not WizardSilent) and
+       (not PreservedCloudLink) then
     begin
       WizardForm.StatusLabel.Caption := 'Conectando RackNova Local con Cloud...';
       CloudUrl := Trim(CloudConfigPage.Values[0]);
