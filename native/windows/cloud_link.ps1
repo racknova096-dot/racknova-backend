@@ -231,19 +231,17 @@ if ($Mode -eq "Backup") {
             exit 0
         }
 
+        $ExistingInterval = 15
+        if ($Config["sync_interval_seconds"]) {
+            $ExistingInterval = [int]$Config["sync_interval_seconds"]
+        }
+
         $Snapshot = @{
             empresa_id = [string]($Config["empresa_id"])
             node_code = [string]($Config["node_code"])
             node_name = [string]($Config["node_name"])
             cloud_url = $ExistingCloudUrl.TrimEnd("/")
-            sync_interval_seconds = [int](
-                if ($Config["sync_interval_seconds"]) {
-                    $Config["sync_interval_seconds"]
-                }
-                else {
-                    15
-                }
-            )
+            sync_interval_seconds = $ExistingInterval
             node_credential = $ExistingCredential
         }
 
@@ -295,8 +293,7 @@ if ($Mode -eq "Restore") {
 }
 
 if ($Mode -eq "Activate") {
-    $Secret = [string]$env:RACKNOVA_INSTALL_SYNC_SECRET
-    $Secret = $Secret.Trim()
+    $Secret = ([string]$env:RACKNOVA_INSTALL_SYNC_SECRET).Trim()
     $CloudUrl = ([string]$CloudUrl).Trim().TrimEnd("/")
     $EmpresaId = ([string]$EmpresaId).Trim()
 
@@ -353,7 +350,7 @@ if ($Mode -eq "Activate") {
     }
     $NodeCode = $NodeCode.Trim().ToUpper()
     $NodeCode = [regex]::Replace($NodeCode, "[^A-Z0-9_-]", "-")
-    $NodeCode = $NodeCode.Trim("-", "_")
+    $NodeCode = $NodeCode.Trim([char[]]"-_")
     if ($NodeCode.Length -gt 120) {
         $NodeCode = $NodeCode.Substring(0, 120)
     }
@@ -369,6 +366,11 @@ if ($Mode -eq "Activate") {
         $NodeName = $NodeName.Substring(0, 180)
     }
 
+    $AppVersion = "native-f1.9"
+    if ($Config["app_version"]) {
+        $AppVersion = [string]$Config["app_version"]
+    }
+
     Write-CloudLog (
         "Validando vínculo con RackNova Cloud. URL=$CloudUrl empresa=$RequestedEmpresa node=$NodeCode"
     )
@@ -382,14 +384,7 @@ if ($Mode -eq "Activate") {
         node_code = $NodeCode
         node_name = $NodeName
         node_type = "LOCAL_SERVER"
-        app_version = [string](
-            if ($Config["app_version"]) {
-                $Config["app_version"]
-            }
-            else {
-                "native-f1.9"
-            }
-        )
+        app_version = $AppVersion
     } | ConvertTo-Json -Compress
 
     try {
