@@ -345,11 +345,29 @@ if ($InitSchemaExitCode -ne 0) {
 }
 '@
 
-$text = Replace-RequiredText `
-    -Source $text `
-    -Old $oldInitSchema `
-    -New $newInitSchema `
-    -Description "recuperación automática de init-schema"
+# El script base se guarda con CRLF en el paquete de Windows, mientras que los
+# here-strings del wrapper pueden llegar con LF según cómo Git prepare el repo.
+# Una comparación literal hacía abortar el instalador antes de crear el log.
+# Usamos regex solo para localizar este bloque y MatchEvaluator para que los '$'
+# del script de reemplazo no se interpreten como grupos de regex.
+$InitSchemaPattern = @'
+(?ms)^Write-Log "Inicializando esquema RackNova\."\r?\n&\s+\$Ctl\s+init-schema\s*\r?\n\s*\r?\nif\s+\(\$LASTEXITCODE\s+-ne\s+0\)\s*\{\s*\r?\n\s*throw\s+"Falló init-schema\."\s*\r?\n\s*\}
+'@.Trim()
+
+$InitSchemaRegex = New-Object System.Text.RegularExpressions.Regex($InitSchemaPattern)
+
+if (-not $InitSchemaRegex.IsMatch($text)) {
+    throw "No encontré el bloque esperado: recuperación automática de init-schema"
+}
+
+$text = $InitSchemaRegex.Replace(
+    $text,
+    [System.Text.RegularExpressions.MatchEvaluator]{
+        param($Match)
+        return $newInitSchema
+    },
+    1
+)
 
 # PostgreSQL/pg_ctl puede escribir fallos tempranos en Application. Revisamos
 # tanto System como Application para que un fallo de arranque quede explicado.
