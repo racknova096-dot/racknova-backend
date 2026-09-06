@@ -125,7 +125,7 @@ function Protect-RackNovaBootstrapSecrets {
             node_name         = ("RackNova Local - " + $env:COMPUTERNAME)
             cloud_url         = ""
             db_port           = 54329
-            app_version       = "native-f1.8-portable"
+            app_version       = "native-f1.9-portable"
         }
 
         $Json = $BootstrapObject | ConvertTo-Json
@@ -187,7 +187,7 @@ function Write-PostgresServiceDiagnostics {
     try {
         $Since = (Get-Date).AddMinutes(-5)
         $Events = Get-WinEvent `
-            -FilterHashtable @{ LogName = "System"; StartTime = $Since } `
+            -FilterHashtable @{ LogName = @("System", "Application"); StartTime = $Since } `
             -ErrorAction SilentlyContinue |
             Where-Object {
                 $_.Message -match "RackNovaPostgreSQL16|postgres"
@@ -208,13 +208,25 @@ function Ensure-PostgresServiceAccount {
     # normalizamos explícitamente el servicio para reparar instalaciones
     # parciales creadas por versiones anteriores y evitar diferencias entre
     # ediciones/idiomas de Windows.
-    & sc.exe config `
+    $ServiceAccountOutput = (& sc.exe config `
         RackNovaPostgreSQL16 `
         obj= LocalSystem `
-        start= auto | Out-Null
+        start= auto 2>&1 | Out-String).Trim()
 
-    if ($LASTEXITCODE -ne 0) {
-        throw "No pude configurar la cuenta LocalSystem de PostgreSQL."
+    $ServiceAccountExitCode = $LASTEXITCODE
+
+    if ($ServiceAccountOutput) {
+        Write-Log (
+            "POSTGRES SERVICE ACCOUNT: " +
+            ($ServiceAccountOutput -replace "`r?`n", " | ")
+        )
+    }
+
+    if ($ServiceAccountExitCode -ne 0) {
+        throw (
+            "No pude configurar la cuenta LocalSystem de PostgreSQL. " +
+            "sc.exe terminó con código $ServiceAccountExitCode."
+        )
     }
 }
 
@@ -249,7 +261,7 @@ function Start-RackNovaPostgresService {
     }
 }
 
-Write-Log "RackNova Native F1.8 portable: configuración iniciada."
+Write-Log "RackNova Native F1.9 portable: configuración iniciada."
 
 trap {
     try {
@@ -390,7 +402,7 @@ host    all    all    ::1/128         scram-sha-256
 
     & icacls.exe `
         $PgData `
-        /inheritance:r `
+        /inheritance:e `
         /grant:r `
         "*S-1-5-18:(OI)(CI)F" `
         "*S-1-5-32-544:(OI)(CI)F" `
@@ -487,10 +499,87 @@ else {
 }
 
 Write-Log "Inicializando esquema RackNova."
-& $Ctl init-schema
+$InitSchemaOutput = (& $Ctl init-schema 2>&1 | Out-String).Trim()
+$InitSchemaExitCode = $LASTEXITCODE
 
-if ($LASTEXITCODE -ne 0) {
-    throw "Falló init-schema."
+if ($InitSchemaOutput) {
+    Write-Log ("INIT-SCHEMA: " + ($InitSchemaOutput -replace "`r?`n", " | "))
+}
+
+if ($InitSchemaExitCode -ne 0) {
+    if ($env:RACKNOVA_SCHEMA_RECOVERY_ATTEMPTED -eq "1") {
+        throw (
+            "Falló init-schema incluso después de reconstruir el runtime local. " +
+            "Código: $InitSchemaExitCode."
+        )
+    }
+
+    $ConfigFile = Join-Path $ConfigDir "config.json"
+    if (Test-Path -LiteralPath $ConfigFile) {
+        try {
+            $ExistingConfig = Get-Content -LiteralPath $ConfigFile -Raw |
+                ConvertFrom-Json
+            if ($ExistingConfig.activated -eq $true) {
+                throw (
+                    "Falló init-schema y esta instalación ya está activada con Cloud. " +
+                    "No reconstruiré PostgreSQL automáticamente para proteger sus datos."
+                )
+            }
+        }
+        catch {
+            if ($_.Exception.Message -match "activada con Cloud") { throw }
+            Write-Log ("No pude validar config.json: " + $_.Exception.Message)
+        }
+    }
+
+    $RecoveryStamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $RecoveryRoot = Join-Path $ProgramDataRoot (
+        "RecoveryBackups\init-schema-" + $RecoveryStamp
+    )
+    New-Item -ItemType Directory -Force -Path $RecoveryRoot | Out-Null
+
+    Write-Log "Detecté una instalación local parcial; conservaré respaldo antes de repararla."
+    Write-Log ("RECOVERY BACKUP: " + $RecoveryRoot)
+
+    Stop-Service RackNovaLocal -Force -ErrorAction SilentlyContinue
+    Stop-Service RackNovaPostgreSQL16 -Force -ErrorAction SilentlyContinue
+
+    foreach ($BackupItem in @("Config", "PostgreSQL")) {
+        $BackupSource = Join-Path $ProgramDataRoot $BackupItem
+        if (Test-Path -LiteralPath $BackupSource) {
+            Copy-Item -LiteralPath $BackupSource -Destination $RecoveryRoot -Recurse -Force
+        }
+    }
+
+    & $PgCtl unregister -N "RackNovaPostgreSQL16" | Out-Null
+    & $ServiceExe remove | Out-Null
+
+    Remove-Item -LiteralPath (Join-Path $ProgramDataRoot "PostgreSQL") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $ConfigDir "secrets.dat") -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $ConfigDir "config.json") -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $ConfigDir "bootstrap-secrets.tmp.json") -Force -ErrorAction SilentlyContinue
+
+    $env:RACKNOVA_SCHEMA_RECOVERY_ATTEMPTED = "1"
+    Write-Log "Reintentando RackNova como instalación local limpia."
+
+    & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+        -NoProfile `
+        -ExecutionPolicy Bypass `
+        -File $PSCommandPath `
+        -InstallDir $InstallDir
+
+    $RecoveryExitCode = $LASTEXITCODE
+    Remove-Item Env:\RACKNOVA_SCHEMA_RECOVERY_ATTEMPTED -ErrorAction SilentlyContinue
+
+    if ($RecoveryExitCode -eq 0) {
+        Write-Log "Recuperación automática completada correctamente."
+        exit 0
+    }
+
+    throw (
+        "La reconstrucción automática también falló. Código: $RecoveryExitCode. " +
+        "Respaldo conservado en $RecoveryRoot"
+    )
 }
 
 $ExistingService = Get-Service `
@@ -595,6 +684,6 @@ if ($LASTEXITCODE -ne 0) {
     throw "RackNova Local no pasó health check. Diagnóstico: $Diag"
 }
 
-Write-Log "RackNova Native F1.8 portable instalado correctamente."
+Write-Log "RackNova Native F1.9 portable instalado correctamente."
 Write-Log "Dashboard Local: http://127.0.0.1:8000/ui/"
 exit 0
