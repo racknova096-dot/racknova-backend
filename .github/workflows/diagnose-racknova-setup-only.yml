@@ -1,0 +1,144 @@
+name: Diagnose RackNova Setup Only
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/diagnose-racknova-setup-only.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnose-setup:
+    runs-on: windows-latest
+    timeout-minutes: 12
+    env:
+      SOURCE_RUN_ID: "34010547386"
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download exact setup already built
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force _setup | Out-Null
+          gh run download $env:SOURCE_RUN_ID `
+            --repo "${{ github.repository }}" `
+            --name "RackNova-F1-9-Diagnostic-Setup" `
+            --dir "_setup"
+
+          $Setup = Get-ChildItem _setup -Recurse -File -Filter "RackNova_Setup_Native_F1_9.exe" |
+            Select-Object -First 1
+          if (-not $Setup) {
+            throw "No encontré RackNova_Setup_Native_F1_9.exe en el artefacto."
+          }
+          $Setup.FullName | Set-Content _setup_path.txt -Encoding UTF8
+
+      - name: Run setup and capture pre-log failures
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $diag = Join-Path $PWD "_smoke_quick"
+          New-Item -ItemType Directory -Force $diag | Out-Null
+
+          $setup = (Get-Content _setup_path.txt -Raw).Trim()
+          $innoLog = Join-Path $diag "inno-setup.log"
+          $installDir = Join-Path $env:ProgramFiles "RackNova"
+          $entry = Join-Path $installDir "installer\configure_install_entry.ps1"
+          $result = "unknown"
+
+          $proc = Start-Process `
+            -FilePath $setup `
+            -ArgumentList @(
+              "/VERYSILENT",
+              "/SUPPRESSMSGBOXES",
+              "/NORESTART",
+              "/SP-",
+              "/LOG=`"$innoLog`""
+            ) `
+            -PassThru `
+            -Wait
+
+          "setup_exit_code=$($proc.ExitCode)" |
+            Set-Content (Join-Path $diag "setup-exit.txt") -Encoding UTF8
+
+          $pg = Get-Service RackNovaPostgreSQL16 -ErrorAction SilentlyContinue
+          $local = Get-Service RackNovaLocal -ErrorAction SilentlyContinue
+
+          if (-not $pg -or -not $local) {
+            "Servicios ausentes tras Setup. Ejecutando entry manual para capturar la excepción real." |
+              Set-Content (Join-Path $diag "manual-entry-reason.txt") -Encoding UTF8
+
+            if (Test-Path -LiteralPath $entry) {
+              $manualOut = & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+                -NoProfile `
+                -ExecutionPolicy Bypass `
+                -File $entry `
+                -InstallDir $installDir 2>&1 | Out-String
+              $manualExit = $LASTEXITCODE
+              $manualOut | Set-Content (Join-Path $diag "manual-entry-output.txt") -Encoding UTF8
+              "manual_entry_exit_code=$manualExit" |
+                Set-Content (Join-Path $diag "manual-entry-exit.txt") -Encoding UTF8
+            }
+            else {
+              "MISSING: $entry" |
+                Set-Content (Join-Path $diag "manual-entry-output.txt") -Encoding UTF8
+            }
+          }
+
+          $rackLogs = Join-Path $env:ProgramData "RackNova\Logs"
+          if (Test-Path -LiteralPath $rackLogs) {
+            Copy-Item $rackLogs (Join-Path $diag "RackNova-Logs") -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+          foreach ($name in @("RackNovaPostgreSQL16", "RackNovaLocal")) {
+            (& sc.exe qc $name 2>&1 | Out-String) |
+              Set-Content (Join-Path $diag ("sc-" + $name + "-qc.txt")) -Encoding UTF8
+            (& sc.exe queryex $name 2>&1 | Out-String) |
+              Set-Content (Join-Path $diag ("sc-" + $name + "-query.txt")) -Encoding UTF8
+          }
+
+          $pg = Get-Service RackNovaPostgreSQL16 -ErrorAction SilentlyContinue
+          $local = Get-Service RackNovaLocal -ErrorAction SilentlyContinue
+
+          if ($pg -and $local -and $pg.Status -eq "Running" -and $local.Status -eq "Running") {
+            try {
+              $health = Invoke-WebRequest `
+                -Uri "http://127.0.0.1:8000/racknova-native/health" `
+                -UseBasicParsing `
+                -TimeoutSec 10
+              "HTTP=$($health.StatusCode)`r`n$($health.Content)" |
+                Set-Content (Join-Path $diag "health.txt") -Encoding UTF8
+              if ($health.StatusCode -eq 200) {
+                $result = "success"
+              }
+            }
+            catch {
+              $_ | Out-String | Set-Content (Join-Path $diag "health.txt") -Encoding UTF8
+            }
+          }
+
+          $result | Set-Content (Join-Path $diag "result.txt") -Encoding UTF8
+
+      - name: Upload quick diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: RackNova-F1-9-Setup-Only-Diagnostics
+          path: _smoke_quick
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Fail if setup is not healthy
+        shell: pwsh
+        run: |
+          $result = (Get-Content _smoke_quick/result.txt -Raw).Trim()
+          if ($result -ne "success") {
+            throw "RackNova Setup no quedó saludable; revisar diagnóstico subido."
+          }
