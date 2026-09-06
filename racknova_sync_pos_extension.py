@@ -17,6 +17,84 @@ POS_BACKFILL_PAGE_SIZE = 100
 POS_BACKFILL_MAX_PAGES_PER_RUN = 3
 
 
+def _repair_missing_sync_uuid(
+    session: Session,
+    *,
+    empresa_id: str,
+    events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Repara únicamente eventos históricos NO-DELETE cuyo snapshot perdió
+    sync_uuid, pero conserva una PK suficiente para identificar la fila actual
+    en Cloud.
+
+    No inventamos identidades ni adelantamos cursores. La identidad se toma de
+    la fila actual de la misma empresa/tabla y el resto del payload histórico
+    permanece intacto. Si no podemos comprobar la fila, dejamos el evento tal
+    cual para que B3 siga fallando de forma visible en lugar de perder datos.
+    """
+    repaired_events: list[dict[str, Any]] = []
+
+    for raw_event in events:
+        event = dict(raw_event)
+        payload = dict(event.get("payload") or {})
+        records = list(payload.get("records") or [])
+
+        operation = str(
+            event.get("operacion")
+            or payload.get("operation")
+            or "EVENT"
+        ).upper()
+        delete_mode = bool(payload.get("tombstone")) or operation == "DELETE"
+
+        if delete_mode or not records:
+            repaired_events.append(event)
+            continue
+
+        repaired_records: list[dict[str, Any]] = []
+        repaired_count = 0
+
+        for raw_record in records:
+            record = dict(raw_record or {})
+            data = dict(record.get("data") or {})
+            sync_uuid = record.get("sync_uuid") or data.get("sync_uuid")
+
+            if not sync_uuid:
+                table = str(record.get("table") or "")
+                source_pk = dict(record.get("pk") or {})
+
+                if worker._is_commercial_table(table) and source_pk:
+                    try:
+                        current = worker._row_by_pk(
+                            session,
+                            table=table,
+                            empresa_id=empresa_id,
+                            pk=source_pk,
+                        )
+                    except Exception:
+                        current = None
+
+                    current_sync_uuid = (
+                        current.get("sync_uuid")
+                        if current
+                        else None
+                    )
+                    if current_sync_uuid:
+                        record["sync_uuid"] = str(current_sync_uuid)
+                        repaired_count += 1
+
+            repaired_records.append(record)
+
+        if repaired_count:
+            payload["records"] = repaired_records
+            payload["pull_sync_uuid_repaired"] = repaired_count
+            event["payload"] = payload
+
+        repaired_events.append(event)
+
+    return repaired_events
+
+
 def _pull_cloud_events_with_pos(
     session: Session,
     *,
@@ -94,7 +172,12 @@ def _pull_cloud_events_with_pos(
             "limite": int(limit),
         },
     ).mappings().all()
-    return [dict(row) for row in rows]
+    events = [dict(row) for row in rows]
+    return _repair_missing_sync_uuid(
+        session,
+        empresa_id=empresa_id,
+        events=events,
+    )
 
 
 def _ensure_pos_cursor(session: Session) -> None:
