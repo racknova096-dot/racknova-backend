@@ -12,6 +12,16 @@ import win32service
 import win32serviceutil
 import uvicorn
 
+
+def _configure_utf8_streams() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
+_configure_utf8_streams()
+
 from racknova_native_config import logs_dir
 from racknova_native_entry import get_app
 
