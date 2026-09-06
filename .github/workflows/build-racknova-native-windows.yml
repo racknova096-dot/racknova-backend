@@ -578,6 +578,14 @@ jobs:
 
           Write-Host "=== Smoke test: instalación limpia ==="
           Invoke-Setup
+          Write-Host "=== RACKNOVA INSTALL LOGS ==="
+          Get-ChildItem "$env:ProgramData\RackNova\Logs" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 8 |
+            ForEach-Object {
+              Write-Host "===== $($_.FullName) ====="
+              Get-Content $_.FullName -ErrorAction SilentlyContinue
+            }
           Assert-RackNovaHealthy
 
           Write-Host "=== Smoke test: simular servicio F1.8 con LocalSystem y ACL dañada ==="
