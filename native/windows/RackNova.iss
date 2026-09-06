@@ -301,7 +301,7 @@ begin
     ewWaitUntilTerminated,
     ResultCode
   );
-  Sleep(1500);
+  Sleep(2500);
   Exec(
     ExpandConstant('{sys}\sc.exe'),
     'start RackNovaLocal',
@@ -377,8 +377,8 @@ begin
         IntToStr(ResultCode) + '. Revisa C:\ProgramData\RackNova\Logs.'
       );
 
-    ; El smoke test del workflow usa /VERYSILENT y valida únicamente el runtime.
-    ; La activación Cloud siempre se realiza en el asistente interactivo normal.
+    // El smoke test del workflow usa /VERYSILENT y valida únicamente el runtime.
+    // La activación Cloud siempre se realiza en el asistente interactivo normal.
     if not WizardSilent then
     begin
       CloudUrl := Trim(CloudConfigPage.Values[0]);
@@ -409,7 +409,7 @@ begin
       begin
         WizardForm.StatusLabel.Caption := 'Descargando estado actual desde RackNova Cloud...';
         StopServiceForUpgrade('RackNovaLocal');
-        Sleep(1500);
+        Sleep(5000);
 
         RunPowerShellScript(
           ExpandConstant('{app}\installer\bootstrap_cloud_snapshot.ps1'),
