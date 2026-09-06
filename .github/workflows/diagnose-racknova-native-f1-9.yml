@@ -20,7 +20,7 @@ jobs:
     env:
       PG_URL: "https://get.enterprisedb.com/postgresql/postgresql-16.15-1-windows-x64.exe"
       PG_SHA256: "DE926FEFAD00E313E212CD438C0F04BF033E200099AD56C012724EFCEBED79F2"
-      SOURCE_RUN_ID: "33946079196"
+      SOURCE_RUN_ID: "34009657545"
       GH_TOKEN: ${{ github.token }}
 
     steps:
