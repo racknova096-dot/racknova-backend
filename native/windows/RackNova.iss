@@ -1,5 +1,5 @@
 #define MyAppName "RackNova Local"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "RackNova"
 
 [Setup]
@@ -216,6 +216,90 @@ begin
   );
 end;
 
+procedure ForceCloseRackNovaPostgres(var ResultCode: Integer);
+var
+  PowerShellExe: String;
+  PgRoot: String;
+  Args: String;
+begin
+  PowerShellExe := ExpandConstant(
+    '{sys}\WindowsPowerShell\v1.0\powershell.exe'
+  );
+  PgRoot := ExpandConstant('{app}\PostgreSQL\');
+  StringChangeEx(PgRoot, '''', '''''', True);
+
+  Args :=
+    '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' +
+    '$root=''' + PgRoot + '''; ' +
+    '$procs=@(Get-Process -Name postgres -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($root,[System.StringComparison]::OrdinalIgnoreCase) }); ' +
+    'if($procs.Count -gt 0){$procs | Stop-Process -Force -ErrorAction SilentlyContinue}; ' +
+    'Start-Sleep -Milliseconds 1500; ' +
+    '$left=@(Get-Process -Name postgres -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($root,[System.StringComparison]::OrdinalIgnoreCase) }); ' +
+    'if($left.Count -gt 0){exit 32}else{exit 0}"';
+
+  if not Exec(
+    PowerShellExe,
+    Args,
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  ) then
+    ResultCode := 33;
+end;
+
+function StopRackNovaRuntimeForUpgrade(): Boolean;
+var
+  ResultCode: Integer;
+  PgCtlResultCode: Integer;
+  ForceResultCode: Integer;
+  PgCtl: String;
+  DataDir: String;
+begin
+  Result := True;
+
+  StopServiceForUpgrade('RackNovaLocal');
+  StopServiceForUpgrade('RackNovaPostgreSQL16');
+
+  PgCtl := ExpandConstant('{app}\PostgreSQL\bin\pg_ctl.exe');
+  DataDir := ExpandConstant('{commonappdata}\RackNova\PostgreSQL\data');
+
+  if FileExists(PgCtl) and DirExists(DataDir) then
+  begin
+    Exec(
+      PgCtl,
+      'stop -D "' + DataDir + '" -m fast -w -t 45',
+      '',
+      SW_HIDE,
+      ewWaitUntilTerminated,
+      PgCtlResultCode
+    );
+  end;
+
+  Sleep(1500);
+
+  { Si un PostgreSQL de RackNova quedó colgado, se cierra únicamente por ruta. }
+  { No se toca ningún postgres.exe perteneciente a otra instalación. }
+  ForceCloseRackNovaPostgres(ForceResultCode);
+  if ForceResultCode <> 0 then
+  begin
+    Result := False;
+    Exit;
+  end;
+
+  { Fallback exclusivo al servicio RackNovaLocal, nunca por nombre global de proceso. }
+  Exec(
+    ExpandConstant('{sys}\taskkill.exe'),
+    '/F /T /FI "SERVICES eq RackNovaLocal"',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  );
+
+  Sleep(1000);
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
@@ -223,10 +307,14 @@ begin
 
   if ExistingInstall then
   begin
-    WizardForm.StatusLabel.Caption := 'Deteniendo servicios de RackNova...';
-    StopServiceForUpgrade('RackNovaLocal');
-    StopServiceForUpgrade('RackNovaPostgreSQL16');
-    Sleep(5000);
+    WizardForm.StatusLabel.Caption := 'Deteniendo RackNova y PostgreSQL de forma segura...';
+    if not StopRackNovaRuntimeForUpgrade() then
+    begin
+      Result :=
+        'No fue posible liberar los archivos de PostgreSQL de RackNova. ' +
+        'El instalador no modificó la base de datos. Reinicia Windows y vuelve a ejecutar este instalador como administrador.';
+      Exit;
+    end;
   end;
 end;
 
