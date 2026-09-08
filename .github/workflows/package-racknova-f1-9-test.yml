@@ -17,7 +17,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 25
     env:
-      HOTFIX_ARTIFACT_ID: "9961580732"
+      HOTFIX_ARTIFACT_ID: "9990381314"
       PG_URL: "https://get.enterprisedb.com/postgresql/postgresql-16.15-1-windows-x64.exe"
       PG_SHA256: "DE926FEFAD00E313E212CD438C0F04BF033E200099AD56C012724EFCEBED79F2"
     steps:
