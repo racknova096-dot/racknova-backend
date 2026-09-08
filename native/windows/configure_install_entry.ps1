@@ -6,41 +6,58 @@ param(
 $ErrorActionPreference = "Stop"
 
 $ProgramDataRoot = Join-Path $env:ProgramData "RackNova"
+$LogDir = Join-Path $ProgramDataRoot "Logs"
 $PgRoot = Join-Path $ProgramDataRoot "PostgreSQL"
-$PgInstall = Join-Path $InstallDir "PostgreSQL"
 $Original = Join-Path $InstallDir "installer\configure_install.ps1"
 $Effective = Join-Path $InstallDir "installer\configure_install_effective.ps1"
+$EntryLog = Join-Path $LogDir (
+    "entry-install-" +
+    (Get-Date -Format "yyyyMMdd_HHmmss") +
+    ".log"
+)
 
-function Grant-LocalSystemAccess {
-    # PostgreSQL corre como LocalSystem. Habilitamos herencia antes de aplicar
-    # el ACE de SYSTEM para reparar también archivos de clusters creados por
-    # builds anteriores que quedaron con la herencia deshabilitada.
-    if (Test-Path -LiteralPath $PgRoot) {
-        & icacls.exe `
-            $PgRoot `
-            /inheritance:e `
-            /grant:r `
-            "*S-1-5-18:(OI)(CI)F" `
-            /T `
-            /C | Out-Null
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
-        if ($LASTEXITCODE -ne 0) {
-            throw "No pude dar permisos de PostgreSQL a LocalSystem."
-        }
+function Write-EntryLog([string]$Message) {
+    $line = "[{0}] {1}" -f (Get-Date -Format "HH:mm:ss"), $Message
+    $line | Tee-Object -FilePath $EntryLog -Append | Write-Host
+}
+
+function Normalize-Newlines([string]$Value) {
+    if ($null -eq $Value) {
+        return ""
     }
 
-    if (Test-Path -LiteralPath $PgInstall) {
-        & icacls.exe `
-            $PgInstall `
-            /inheritance:e `
-            /grant:r `
-            "*S-1-5-18:(OI)(CI)RX" `
-            /T `
-            /C | Out-Null
+    return $Value.Replace("`r`n", "`n").Replace("`r", "`n")
+}
 
-        if ($LASTEXITCODE -ne 0) {
-            throw "No pude dar acceso a los binarios PostgreSQL a LocalSystem."
-        }
+function Grant-LocalSystemDataAccess {
+    if (-not (Test-Path -LiteralPath $PgRoot)) {
+        return
+    }
+
+    $AclOutput = (& icacls.exe `
+        $PgRoot `
+        /inheritance:e `
+        /grant:r `
+        "*S-1-5-18:(OI)(CI)F" `
+        /T `
+        /C 2>&1 | Out-String).Trim()
+
+    $AclExitCode = $LASTEXITCODE
+
+    if ($AclOutput) {
+        Write-EntryLog (
+            "POSTGRES DATA ACL: " +
+            ($AclOutput -replace "`r?`n", " | ")
+        )
+    }
+
+    if ($AclExitCode -ne 0) {
+        throw (
+            "No pude dar permisos del cluster PostgreSQL a LocalSystem. " +
+            "icacls terminó con código $AclExitCode."
+        )
     }
 }
 
@@ -59,28 +76,38 @@ function Replace-RequiredText {
         [string]$Description
     )
 
-    if (-not $Source.Contains($Old)) {
+    $NormalizedSource = Normalize-Newlines $Source
+    $NormalizedOld = Normalize-Newlines $Old
+    $NormalizedNew = Normalize-Newlines $New
+
+    if (-not $NormalizedSource.Contains($NormalizedOld)) {
         throw "No encontré el bloque esperado: $Description"
     }
 
-    return $Source.Replace($Old, $New)
+    return $NormalizedSource.Replace($NormalizedOld, $NormalizedNew)
 }
 
-if (-not (Test-Path -LiteralPath $Original)) {
-    throw "No existe configure_install.ps1"
-}
+$ExitCode = 1
 
-# Crear el padre antes de la reparación hace que el cluster nuevo herede desde
-# el inicio el acceso de SYSTEM. Esto replica la reparación manual validada.
-New-Item -ItemType Directory -Force -Path $PgRoot | Out-Null
-Grant-LocalSystemAccess
+try {
+    Write-EntryLog "RackNova installer entry iniciado."
+    Write-EntryLog ("InstallDir=" + $InstallDir)
 
-$text = [System.IO.File]::ReadAllText($Original)
+    if (-not (Test-Path -LiteralPath $Original)) {
+        throw "No existe configure_install.ps1"
+    }
 
-# Mantener LocalSystem, que es la cuenta con la que pg_ctl registra el servicio
-# y la que ya fue validada en la reparación manual. Además, conservar la salida
-# real de sc.exe en el log para no volver a perder el motivo de un fallo.
-$oldServiceAccount = @'
+    # Solo modificamos ACL del cluster en ProgramData. No tocamos de forma
+    # recursiva los binarios de PostgreSQL en Program Files: LocalSystem ya
+    # dispone de lectura/ejecución allí y un icacls recursivo podía abortar
+    # antes de que configure_install.ps1 alcanzara a crear su propio log.
+    New-Item -ItemType Directory -Force -Path $PgRoot | Out-Null
+    Write-EntryLog "Preparando permisos del cluster PostgreSQL."
+    Grant-LocalSystemDataAccess
+
+    $text = Normalize-Newlines ([System.IO.File]::ReadAllText($Original))
+
+    $oldServiceAccount = @'
     & sc.exe config `
         RackNovaPostgreSQL16 `
         obj= LocalSystem `
@@ -91,7 +118,7 @@ $oldServiceAccount = @'
     }
 '@
 
-$newServiceAccount = @'
+    $newServiceAccount = @'
     $ServiceAccountOutput = (& sc.exe config `
         RackNovaPostgreSQL16 `
         obj= LocalSystem `
@@ -113,18 +140,13 @@ $newServiceAccount = @'
     }
 '@
 
-$text = Replace-RequiredText `
-    -Source $text `
-    -Old $oldServiceAccount `
-    -New $newServiceAccount `
-    -Description "configuración y diagnóstico de la cuenta LocalSystem"
+    $text = Replace-RequiredText `
+        -Source $text `
+        -Old $oldServiceAccount `
+        -New $newServiceAccount `
+        -Description "configuración y diagnóstico de la cuenta LocalSystem"
 
-# initdb crea postgresql.conf y el resto del cluster con la cuenta del
-# instalador. F1.9 estaba deshabilitando la herencia (/inheritance:r) justo
-# antes de arrancar el servicio, dejando postgresql.conf inaccesible para
-# LocalSystem en Windows Server/GitHub Runner. Mantener la herencia habilitada
-# conserva SYSTEM en cada archivo y sigue dejando control total a SYSTEM/admin.
-$oldPgDataAcl = @'
+    $oldPgDataAcl = @'
     & icacls.exe `
         $PgData `
         /inheritance:r `
@@ -135,7 +157,7 @@ $oldPgDataAcl = @'
         /C | Out-Null
 '@
 
-$newPgDataAcl = @'
+    $newPgDataAcl = @'
     & icacls.exe `
         $PgData `
         /inheritance:e `
@@ -146,19 +168,13 @@ $newPgDataAcl = @'
         /C | Out-Null
 '@
 
-$text = Replace-RequiredText `
-    -Source $text `
-    -Old $oldPgDataAcl `
-    -New $newPgDataAcl `
-    -Description "ACL heredable de PostgreSQL para LocalSystem"
+    $text = Replace-RequiredText `
+        -Source $text `
+        -Old $oldPgDataAcl `
+        -New $newPgDataAcl `
+        -Description "ACL heredable de PostgreSQL para LocalSystem"
 
-# Una PC que ya pasó por F1.7/F1.8 puede conservar el servicio PostgreSQL y
-# secrets.dat aunque la creación de racknova/racknova_app haya quedado a medias.
-# En ese estado PostgreSQL arranca correctamente, pero RackNovaCtl init-schema
-# falla. Si la instalación todavía NO está activada con Cloud, conservamos una
-# copia completa del estado parcial y reconstruimos el runtime local desde cero.
-# El segundo intento está protegido por una bandera para evitar recursión infinita.
-$oldInitSchema = @'
+    $oldInitSchema = @'
 Write-Log "Inicializando esquema RackNova."
 & $Ctl init-schema
 
@@ -167,7 +183,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 '@
 
-$newInitSchema = @'
+    $newInitSchema = @'
 Write-Log "Inicializando esquema RackNova."
 
 $InitSchemaOutput = (& $Ctl init-schema 2>&1 | Out-String).Trim()
@@ -345,63 +361,81 @@ if ($InitSchemaExitCode -ne 0) {
 }
 '@
 
-# El script base se guarda con CRLF en el paquete de Windows, mientras que los
-# here-strings del wrapper pueden llegar con LF según cómo Git prepare el repo.
-# Una comparación literal hacía abortar el instalador antes de crear el log.
-# Usamos regex solo para localizar este bloque y MatchEvaluator para que los '$'
-# del script de reemplazo no se interpreten como grupos de regex.
-$InitSchemaPattern = @'
-(?ms)^Write-Log "Inicializando esquema RackNova\."\r?\n&\s+\$Ctl\s+init-schema\s*\r?\n\s*\r?\nif\s+\(\$LASTEXITCODE\s+-ne\s+0\)\s*\{\s*\r?\n\s*throw\s+"Falló init-schema\."\s*\r?\n\s*\}
-'@.Trim()
+    $text = Replace-RequiredText `
+        -Source $text `
+        -Old $oldInitSchema `
+        -New $newInitSchema `
+        -Description "recuperación automática de init-schema"
 
-$InitSchemaRegex = New-Object System.Text.RegularExpressions.Regex($InitSchemaPattern)
+    $oldEventFilter = '@{ LogName = "System"; StartTime = $Since }'
+    $newEventFilter = '@{ LogName = @("System", "Application"); StartTime = $Since }'
 
-if (-not $InitSchemaRegex.IsMatch($text)) {
-    throw "No encontré el bloque esperado: recuperación automática de init-schema"
-}
+    if ($text.Contains($oldEventFilter)) {
+        $text = $text.Replace($oldEventFilter, $newEventFilter)
+    }
 
-$text = $InitSchemaRegex.Replace(
-    $text,
-    [System.Text.RegularExpressions.MatchEvaluator]{
-        param($Match)
-        return $newInitSchema
-    },
-    1
-)
+    $text = $text.Replace("native-f1.8-portable", "native-f1.9-portable")
+    $text = $text.Replace(
+        "RackNova Native F1.8 portable",
+        "RackNova Native F1.9 portable"
+    )
 
-# PostgreSQL/pg_ctl puede escribir fallos tempranos en Application. Revisamos
-# tanto System como Application para que un fallo de arranque quede explicado.
-$oldEventFilter = '@{ LogName = "System"; StartTime = $Since }'
-$newEventFilter = '@{ LogName = @("System", "Application"); StartTime = $Since }'
+    [System.IO.File]::WriteAllText(
+        $Effective,
+        $text,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
 
-if ($text.Contains($oldEventFilter)) {
-    $text = $text.Replace($oldEventFilter, $newEventFilter)
-}
+    Write-EntryLog "configure_install_effective.ps1 preparado correctamente."
+    Write-EntryLog "Ejecutando configuración principal de RackNova."
 
-# Mantener diagnóstico y secretos con la versión real del instalador.
-$text = $text.Replace("native-f1.8-portable", "native-f1.9-portable")
-$text = $text.Replace("RackNova Native F1.8 portable", "RackNova Native F1.9 portable")
-
-[System.IO.File]::WriteAllText(
-    $Effective,
-    $text,
-    (New-Object System.Text.UTF8Encoding($false))
-)
-
-try {
-    & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+    $Output = & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
         -NoProfile `
         -ExecutionPolicy Bypass `
         -File $Effective `
-        -InstallDir $InstallDir
+        -InstallDir $InstallDir 2>&1
 
     $ExitCode = $LASTEXITCODE
 
-    # Es idempotente: cubre también el cluster creado durante esta ejecución.
-    Grant-LocalSystemAccess
+    foreach ($OutputLine in @($Output)) {
+        if ($null -ne $OutputLine) {
+            Write-EntryLog ("CONFIGURE: " + ($OutputLine | Out-String).Trim())
+        }
+    }
 
-    exit $ExitCode
+    Write-EntryLog (
+        "configure_install_effective.ps1 terminó con código " + $ExitCode + "."
+    )
+
+    try {
+        Grant-LocalSystemDataAccess
+    }
+    catch {
+        Write-EntryLog (
+            "ACL FINAL WARNING: " + $_.Exception.Message
+        )
+    }
+}
+catch {
+    $ExitCode = 1
+    try {
+        Write-EntryLog ("ERROR: " + $_.Exception.Message)
+
+        if ($_.ScriptStackTrace) {
+            Write-EntryLog (
+                "STACK: " +
+                ($_.ScriptStackTrace -replace "`r?`n", " | ")
+            )
+        }
+    }
+    catch {
+    }
 }
 finally {
-    Remove-Item -LiteralPath $Effective -Force -ErrorAction SilentlyContinue
+    Remove-Item `
+        -LiteralPath $Effective `
+        -Force `
+        -ErrorAction SilentlyContinue
 }
+
+exit $ExitCode
