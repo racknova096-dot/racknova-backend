@@ -52,16 +52,16 @@ jobs:
           $safeText = Get-Content -LiteralPath $safe -Raw
           $issText = Get-Content -LiteralPath $iss -Raw
 
-          if ($issText -match "reset_definitive\.ps1") {
+          if ($issText -match 'reset_definitive\.ps1') {
             throw "El instalador SAFE no puede empaquetar ni ejecutar reset_definitive.ps1."
           }
-          if ($safeText -match "Move-Item[\s\S]{0,200}\$PgData") {
+          if ($safeText -match 'Move-Item[\s\S]{0,200}\$PgData') {
             throw "La reparación SAFE no puede mover PgData."
           }
-          if ($safeText -match "Remove-Item[\s\S]{0,200}\$PgData") {
+          if ($safeText -match 'Remove-Item[\s\S]{0,200}\$PgData') {
             throw "La reparación SAFE no puede borrar PgData."
           }
-          if ($safeText -match "sc\.exe\s+delete\s+RackNovaPostgreSQL16") {
+          if ($safeText -match 'sc\.exe\s+delete\s+RackNovaPostgreSQL16') {
             throw "La reparación SAFE no puede eliminar RackNovaPostgreSQL16."
           }
 
