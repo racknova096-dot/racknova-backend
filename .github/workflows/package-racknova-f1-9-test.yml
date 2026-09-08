@@ -7,6 +7,7 @@ on:
       - main
     paths:
       - .github/workflows/package-racknova-f1-9-test.yml
+      - native/windows/RackNova.iss
 
 permissions:
   contents: read
