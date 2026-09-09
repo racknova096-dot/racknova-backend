@@ -109,6 +109,7 @@ jobs:
             & taskkill.exe /PID $proc.Id /T /F | Out-Null
             throw "Extracción PostgreSQL excedió 5 minutos"
           }
+          $proc.Refresh()
           if ($proc.ExitCode -ne 0) {
             throw "PostgreSQL extract-only terminó con código $($proc.ExitCode)"
           }
@@ -153,17 +154,71 @@ jobs:
           $hash | Set-Content output/SHA256_RECOVERY.txt
           Write-Host "RECOVERY SHA256=$hash"
 
-      - name: Smoke test clean install
+      - name: Create bounded installer runner
         shell: pwsh
         run: |
+          $helper = @'
+          function Invoke-RackNovaInstaller {
+            param(
+              [Parameter(Mandatory = $true)][string]$Installer,
+              [Parameter(Mandatory = $true)][string]$LogPath,
+              [Parameter(Mandatory = $true)][string]$Phase,
+              [int]$TimeoutSeconds = 900
+            )
+
+            Remove-Item -LiteralPath $LogPath -Force -ErrorAction SilentlyContinue
+            $arguments = @(
+              "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-",
+              "/LOG=$LogPath"
+            )
+
+            Write-Host "Starting $Phase installer with timeout=${TimeoutSeconds}s"
+            $proc = Start-Process -FilePath $Installer -ArgumentList $arguments -PassThru
+            $finished = $proc.WaitForExit($TimeoutSeconds * 1000)
+
+            if (-not $finished) {
+              Write-Host "::error::$Phase timed out after $TimeoutSeconds seconds"
+              if (Test-Path -LiteralPath $LogPath) {
+                Write-Host "===== Inno Setup log tail: $LogPath ====="
+                Get-Content -LiteralPath $LogPath -Tail 400 | Out-Host
+              }
+              Write-Host "===== Candidate child/process diagnostics ====="
+              Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                Where-Object {
+                  $_.Name -match 'setup|powershell|pwsh|postgres|pg_ctl|initdb|RackNova' -or
+                  $_.ParentProcessId -eq $proc.Id
+                } |
+                Select-Object ProcessId, ParentProcessId, Name, CommandLine |
+                Format-Table -AutoSize | Out-String | Write-Host
+              try { & taskkill.exe /PID $proc.Id /T /F | Out-Host } catch {}
+              throw "$Phase excedió el límite de $TimeoutSeconds segundos"
+            }
+
+            $proc.Refresh()
+            if ($proc.ExitCode -ne 0) {
+              Write-Host "::error::$Phase failed with exit code $($proc.ExitCode)"
+              if (Test-Path -LiteralPath $LogPath) {
+                Write-Host "===== Inno Setup log tail: $LogPath ====="
+                Get-Content -LiteralPath $LogPath -Tail 400 | Out-Host
+              }
+              throw "$Phase falló: $($proc.ExitCode)"
+            }
+
+            Write-Host "$Phase installer completed successfully."
+          }
+          '@
+          $helperPath = Join-Path $env:RUNNER_TEMP "racknova-installer-smoke.ps1"
+          Set-Content -LiteralPath $helperPath -Value $helper -Encoding UTF8
+          Write-Host "Helper created: $helperPath"
+
+      - name: Smoke test clean install
+        shell: pwsh
+        timeout-minutes: 18
+        run: |
           $ErrorActionPreference = "Stop"
+          . (Join-Path $env:RUNNER_TEMP "racknova-installer-smoke.ps1")
           $setup = (Resolve-Path "native/windows/output/RackNova_Setup_Recovery_F1_9_3.exe").Path
-          $args = @(
-            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-",
-            "/LOG=C:\racknova-clean-install.log"
-          )
-          $p = Start-Process -FilePath $setup -ArgumentList $args -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "Clean install falló: $($p.ExitCode)" }
+          Invoke-RackNovaInstaller -Installer $setup -LogPath "C:\racknova-clean-install.log" -Phase "Clean install" -TimeoutSeconds 900
 
           $ctl = "C:\Program Files\RackNova\RackNovaCtl.exe"
           if (-not (Test-Path $ctl)) { throw "Falta RackNovaCtl.exe instalado" }
@@ -185,18 +240,16 @@ jobs:
 
       - name: Smoke test healthy repair preserves PostgreSQL
         shell: pwsh
+        timeout-minutes: 18
         run: |
           $ErrorActionPreference = "Stop"
+          . (Join-Path $env:RUNNER_TEMP "racknova-installer-smoke.ps1")
           $setup = (Resolve-Path "native/windows/output/RackNova_Setup_Recovery_F1_9_3.exe").Path
-          $before = @(Get-ChildItem "C:\ProgramData\RackNova\Logs" -Filter "recovery-install-*.log" -ErrorAction SilentlyContinue).Count
-          $p = Start-Process -FilePath $setup -ArgumentList @(
-            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-",
-            "/LOG=C:\racknova-healthy-repair.log"
-          ) -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "Healthy repair falló: $($p.ExitCode)" }
+          Invoke-RackNovaInstaller -Installer $setup -LogPath "C:\racknova-healthy-repair.log" -Phase "Healthy repair" -TimeoutSeconds 900
 
           $log = Get-ChildItem "C:\ProgramData\RackNova\Logs" -Filter "recovery-install-*.log" |
             Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          if (-not $log) { throw "Healthy repair no generó recovery-install log" }
           $text = Get-Content $log.FullName -Raw
           if ($text -notmatch "RESULTADO: PostgreSQL=CONSERVADO") {
             throw "Healthy repair no confirmó conservación de PostgreSQL. Log=$($log.FullName)"
@@ -224,17 +277,16 @@ jobs:
 
       - name: Smoke test broken PostgreSQL reconstruction
         shell: pwsh
+        timeout-minutes: 18
         run: |
           $ErrorActionPreference = "Stop"
+          . (Join-Path $env:RUNNER_TEMP "racknova-installer-smoke.ps1")
           $setup = (Resolve-Path "native/windows/output/RackNova_Setup_Recovery_F1_9_3.exe").Path
-          $p = Start-Process -FilePath $setup -ArgumentList @(
-            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-",
-            "/LOG=C:\racknova-broken-recovery.log"
-          ) -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "Broken PG recovery falló: $($p.ExitCode)" }
+          Invoke-RackNovaInstaller -Installer $setup -LogPath "C:\racknova-broken-recovery.log" -Phase "Broken PostgreSQL recovery" -TimeoutSeconds 900
 
           $log = Get-ChildItem "C:\ProgramData\RackNova\Logs" -Filter "recovery-install-*.log" |
             Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          if (-not $log) { throw "Broken recovery no generó recovery-install log" }
           $text = Get-Content $log.FullName -Raw
           Write-Host $text
           if ($text -notmatch "RECONSTRUCCION COMPLETA") {
