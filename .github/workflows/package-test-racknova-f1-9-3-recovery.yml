@@ -1,0 +1,314 @@
+name: Build and test RackNova F1.9.3 Recovery
+
+on:
+  push:
+    branches:
+      - installer-recovery-f1-9-3
+    paths:
+      - .github/workflows/package-test-racknova-f1-9-3-recovery.yml
+      - native/windows/RackNovaRecovery.iss
+      - native/windows/configure_install_recovery.ps1
+      - native/windows/configure_install.ps1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-and-recovery-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      HOTFIX_ARTIFACT_ID: "10081223979"
+      PG_URL: "https://get.enterprisedb.com/postgresql/postgresql-16.15-1-windows-x64.exe"
+      PG_SHA256: "DE926FEFAD00E313E212CD438C0F04BF033E200099AD56C012724EFCEBED79F2"
+
+    steps:
+      - name: Checkout recovery branch
+        uses: actions/checkout@v5
+
+      - name: Validate PowerShell syntax
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          foreach ($script in @(
+            "native/windows/configure_install_recovery.ps1",
+            "native/windows/configure_install.ps1"
+          )) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script).Path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $details = ($errors | ForEach-Object {
+                "line=$($_.Extent.StartLineNumber) $($_.Message)"
+              }) -join " | "
+              throw "PowerShell inválido en ${script}: $details"
+            }
+          }
+
+          $text = Get-Content native/windows/configure_install_recovery.ps1 -Raw
+          if ($text -match 'Replace-RequiredText|\.Replace\([^\r\n]*configure_install') {
+            throw "Recovery no debe reescribir configure_install.ps1 por coincidencias de texto."
+          }
+          if ($text -notmatch 'Backup-ClusterBeforeRebuild') {
+            throw "Recovery debe respaldar cluster antes de reconstrucción."
+          }
+          if ($text -notmatch 'initdb') {
+            throw "Recovery debe contener reconstrucción PostgreSQL real con initdb."
+          }
+
+      - name: Download verified RackNova binaries
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          gh api "/repos/${{ github.repository }}/actions/artifacts/$env:HOTFIX_ARTIFACT_ID/zip" > hotfix.zip
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Expand-Archive hotfix.zip -DestinationPath dist -Force
+          if (-not (Test-Path "dist/RackNovaCtl.exe")) { throw "Falta RackNovaCtl.exe" }
+          if (-not (Test-Path "dist/RackNovaLocalService/RackNovaLocalService.exe")) {
+            throw "Falta RackNovaLocalService.exe"
+          }
+
+      - name: Prepare portable PostgreSQL 16.15
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force native/windows/vendor | Out-Null
+          $installer = (Resolve-Path "native/windows/vendor").Path + "\postgresql-16.15-1-windows-x64.exe"
+          Invoke-WebRequest -Uri $env:PG_URL -OutFile $installer
+
+          $actual = (Get-FileHash $installer -Algorithm SHA256).Hash.ToUpperInvariant()
+          if ($actual -ne $env:PG_SHA256.ToUpperInvariant()) {
+            throw "SHA256 PostgreSQL inválido: $actual"
+          }
+
+          $nativeRoot = (Resolve-Path "native/windows").Path
+          $extractRoot = Join-Path $nativeRoot "postgres_extract"
+          $target = Join-Path $nativeRoot "postgresql_portable"
+          Remove-Item $extractRoot -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $extractRoot | Out-Null
+
+          $args = @(
+            "--extract-only", "1",
+            "--mode", "unattended",
+            "--unattendedmodeui", "none",
+            "--install_runtimes", "0",
+            "--prefix", "`"$extractRoot`""
+          )
+          $proc = Start-Process -FilePath $installer -ArgumentList $args -PassThru
+          if (-not $proc.WaitForExit(300000)) {
+            & taskkill.exe /PID $proc.Id /T /F | Out-Null
+            throw "Extracción PostgreSQL excedió 5 minutos"
+          }
+          if ($proc.ExitCode -ne 0) {
+            throw "PostgreSQL extract-only terminó con código $($proc.ExitCode)"
+          }
+
+          $initdb = Get-ChildItem -Path $extractRoot -Filter initdb.exe -File -Recurse | Select-Object -First 1
+          if (-not $initdb) { throw "No se encontró initdb.exe" }
+          $pgsqlRoot = $initdb.Directory.Parent.FullName
+          New-Item -ItemType Directory -Force $target | Out-Null
+          Copy-Item (Join-Path $pgsqlRoot "*") $target -Recurse -Force
+
+          foreach ($relative in @(
+            "bin\initdb.exe", "bin\pg_ctl.exe", "bin\pg_isready.exe",
+            "bin\psql.exe", "bin\createdb.exe", "bin\postgres.exe"
+          )) {
+            if (-not (Test-Path (Join-Path $target $relative))) {
+              throw "PostgreSQL portable incompleto: falta $relative"
+            }
+          }
+          Remove-Item $extractRoot -Recurse -Force
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Compile F1.9.3 Recovery installer
+        working-directory: native/windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $iscc)) { throw "No encontré ISCC.exe" }
+
+          & $iscc RackNovaRecovery.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup Recovery falló" }
+
+          $setup = "output/RackNova_Setup_Recovery_F1_9_3.exe"
+          if (-not (Test-Path $setup)) { throw "No se generó $setup" }
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToUpperInvariant()
+          $hash | Set-Content output/SHA256_RECOVERY.txt
+          Write-Host "RECOVERY SHA256=$hash"
+
+      - name: Smoke test clean install
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setup = (Resolve-Path "native/windows/output/RackNova_Setup_Recovery_F1_9_3.exe").Path
+          $args = @(
+            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-",
+            "/LOG=C:\racknova-clean-install.log"
+          )
+          $p = Start-Process -FilePath $setup -ArgumentList $args -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Clean install falló: $($p.ExitCode)" }
+
+          $ctl = "C:\Program Files\RackNova\RackNovaCtl.exe"
+          if (-not (Test-Path $ctl)) { throw "Falta RackNovaCtl.exe instalado" }
+
+          for ($i=0; $i -lt 30; $i++) {
+            & $ctl health | Out-Host
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds 2
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Health falló después de clean install" }
+
+          foreach ($name in @("RackNovaLocal", "RackNovaPostgreSQL16")) {
+            $svc = Get-Service $name -ErrorAction Stop
+            if ($svc.Status -ne "Running") { throw "$name no está Running" }
+          }
+
+          $version = (Get-Content "C:\ProgramData\RackNova\PostgreSQL\data\PG_VERSION" -Raw).Trim()
+          if (-not $version.StartsWith("16")) { throw "PG_VERSION inesperado: $version" }
+
+      - name: Smoke test healthy repair preserves PostgreSQL
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setup = (Resolve-Path "native/windows/output/RackNova_Setup_Recovery_F1_9_3.exe").Path
+          $before = @(Get-ChildItem "C:\ProgramData\RackNova\Logs" -Filter "recovery-install-*.log" -ErrorAction SilentlyContinue).Count
+          $p = Start-Process -FilePath $setup -ArgumentList @(
+            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-",
+            "/LOG=C:\racknova-healthy-repair.log"
+          ) -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Healthy repair falló: $($p.ExitCode)" }
+
+          $log = Get-ChildItem "C:\ProgramData\RackNova\Logs" -Filter "recovery-install-*.log" |
+            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          $text = Get-Content $log.FullName -Raw
+          if ($text -notmatch "RESULTADO: PostgreSQL=CONSERVADO") {
+            throw "Healthy repair no confirmó conservación de PostgreSQL. Log=$($log.FullName)"
+          }
+          if ($text -match "RECONSTRUCCION COMPLETA") {
+            throw "Healthy repair reconstruyó PostgreSQL sin necesidad."
+          }
+
+          $ctl = "C:\Program Files\RackNova\RackNovaCtl.exe"
+          & $ctl health | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "Health falló después de healthy repair" }
+
+      - name: Break PostgreSQL deliberately
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Stop-Service RackNovaLocal -Force -ErrorAction SilentlyContinue
+          Stop-Service RackNovaPostgreSQL16 -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+
+          $pgVersion = "C:\ProgramData\RackNova\PostgreSQL\data\PG_VERSION"
+          if (-not (Test-Path $pgVersion)) { throw "No existe PG_VERSION para la prueba" }
+          Set-Content -LiteralPath $pgVersion -Value "BROKEN-BY-SMOKE-TEST" -Encoding ASCII
+          Write-Host "PostgreSQL intencionalmente roto: PG_VERSION= BROKEN-BY-SMOKE-TEST"
+
+      - name: Smoke test broken PostgreSQL reconstruction
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setup = (Resolve-Path "native/windows/output/RackNova_Setup_Recovery_F1_9_3.exe").Path
+          $p = Start-Process -FilePath $setup -ArgumentList @(
+            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-",
+            "/LOG=C:\racknova-broken-recovery.log"
+          ) -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Broken PG recovery falló: $($p.ExitCode)" }
+
+          $log = Get-ChildItem "C:\ProgramData\RackNova\Logs" -Filter "recovery-install-*.log" |
+            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          $text = Get-Content $log.FullName -Raw
+          Write-Host $text
+          if ($text -notmatch "RECONSTRUCCION COMPLETA") {
+            throw "La prueba rota no ejecutó reconstrucción real."
+          }
+          if ($text -notmatch "RESULTADO: PostgreSQL=RECONSTRUIDO") {
+            throw "El resultado no confirmó PostgreSQL reconstruido."
+          }
+
+          $version = (Get-Content "C:\ProgramData\RackNova\PostgreSQL\data\PG_VERSION" -Raw).Trim()
+          if (-not $version.StartsWith("16")) { throw "PG_VERSION no fue reconstruido: $version" }
+
+          $backup = Get-ChildItem "C:\ProgramData\RackNova\Backups" -Directory -Filter "Recovery-*" |
+            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          if (-not $backup) { throw "No se creó backup Recovery-*" }
+          $backupVersion = Join-Path $backup.FullName "PostgreSQL-data\PG_VERSION"
+          if (-not (Test-Path $backupVersion)) { throw "El backup no contiene el cluster previo" }
+          $old = (Get-Content $backupVersion -Raw).Trim()
+          if ($old -ne "BROKEN-BY-SMOKE-TEST") {
+            throw "El backup no corresponde al cluster roto: $old"
+          }
+
+          $ctl = "C:\Program Files\RackNova\RackNovaCtl.exe"
+          for ($i=0; $i -lt 30; $i++) {
+            & $ctl health | Out-Host
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds 2
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Health falló tras reconstrucción" }
+
+          foreach ($name in @("RackNovaLocal", "RackNovaPostgreSQL16")) {
+            $svc = Get-Service $name -ErrorAction Stop
+            if ($svc.Status -ne "Running") { throw "$name no está Running tras recovery" }
+          }
+
+          Write-Host "SMOKE OK: clean install + preserve healthy PG + reconstruct broken PG + backup verified"
+
+      - name: Collect smoke diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force smoke-output | Out-Null
+          foreach ($path in @(
+            "C:\racknova-clean-install.log",
+            "C:\racknova-healthy-repair.log",
+            "C:\racknova-broken-recovery.log"
+          )) {
+            if (Test-Path $path) { Copy-Item $path smoke-output -Force }
+          }
+          if (Test-Path "C:\ProgramData\RackNova\Logs") {
+            Copy-Item "C:\ProgramData\RackNova\Logs" "smoke-output\RackNova-Logs" -Recurse -Force
+          }
+          if (Test-Path "C:\ProgramData\RackNova\Backups") {
+            Get-ChildItem "C:\ProgramData\RackNova\Backups" -Directory |
+              Select-Object Name, LastWriteTimeUtc |
+              Format-Table -AutoSize |
+              Out-String | Set-Content smoke-output\backup-list.txt
+          }
+
+      - name: Upload smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: RackNova-F1-9-3-RECOVERY-SMOKE
+          path: smoke-output
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload tested recovery installer
+        uses: actions/upload-artifact@v6
+        with:
+          name: RackNova-F1-9-3-RECOVERY-TESTED
+          path: |
+            native/windows/output/RackNova_Setup_Recovery_F1_9_3.exe
+            native/windows/output/SHA256_RECOVERY.txt
+          if-no-files-found: error
+          retention-days: 14
