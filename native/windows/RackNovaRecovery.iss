@@ -124,18 +124,28 @@ begin
   else
   begin
     WriteInstallerEntryLog('Instalación nueva detectada.');
-    CloudConfigPage := CreateInputQueryPage(
-      wpSelectDir,
-      'Conexión con RackNova Cloud',
-      'Activa este equipo durante la instalación',
-      'Introduce los datos de RackNova Cloud. El Sync Secret se oculta y se guarda protegido por Windows DPAPI.'
-    );
-    CloudConfigPage.Add('URL de RackNova Cloud:', False);
-    CloudConfigPage.Values[0] := 'https://racknova-backend-1.onrender.com';
-    CloudConfigPage.Add('ID de empresa:', False);
-    CloudConfigPage.Values[1] := '11111111-1111-4111-8111-111111111111';
-    CloudConfigPage.Add('Sync Secret de RackNova:', True);
-    CloudConfigPage.Values[2] := '';
+
+    if WizardSilent then
+    begin
+      WriteInstallerEntryLog(
+        'Modo silencioso: se omite captura/validación Cloud; continuará la instalación local sin activación interactiva.'
+      );
+    end
+    else
+    begin
+      CloudConfigPage := CreateInputQueryPage(
+        wpSelectDir,
+        'Conexión con RackNova Cloud',
+        'Activa este equipo durante la instalación',
+        'Introduce los datos de RackNova Cloud. El Sync Secret se oculta y se guarda protegido por Windows DPAPI.'
+      );
+      CloudConfigPage.Add('URL de RackNova Cloud:', False);
+      CloudConfigPage.Values[0] := 'https://racknova-backend-1.onrender.com';
+      CloudConfigPage.Add('ID de empresa:', False);
+      CloudConfigPage.Values[1] := '11111111-1111-4111-8111-111111111111';
+      CloudConfigPage.Add('Sync Secret de RackNova:', True);
+      CloudConfigPage.Values[2] := '';
+    end;
   end;
 end;
 
@@ -146,6 +156,9 @@ var
   SyncSecret: String;
 begin
   Result := True;
+
+  if WizardSilent then
+    Exit;
 
   if (not ExistingInstall) and (CurPageID = CloudConfigPage.ID) then
   begin
