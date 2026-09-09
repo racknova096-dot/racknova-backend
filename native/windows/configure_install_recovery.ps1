@@ -17,12 +17,17 @@ $PgLogs = Join-Path $PgRoot "logs"
 $Ctl = Join-Path $InstallDir "RackNovaCtl.exe"
 $BaseConfigure = Join-Path $InstallDir "installer\configure_install.ps1"
 $BootstrapCloud = Join-Path $InstallDir "installer\bootstrap_cloud_snapshot.ps1"
-$PgBin = Join-Path $InstallDir "PostgreSQL\bin"
+$PgInstall = Join-Path $InstallDir "PostgreSQL"
+$PgBin = Join-Path $PgInstall "bin"
 $InitDb = Join-Path $PgBin "initdb.exe"
 $PgCtl = Join-Path $PgBin "pg_ctl.exe"
 $PgIsReady = Join-Path $PgBin "pg_isready.exe"
 $Psql = Join-Path $PgBin "psql.exe"
 $Createdb = Join-Path $PgBin "createdb.exe"
+
+$PostgresServiceName = "RackNovaPostgreSQL16"
+$PostgresServiceAccount = "NT AUTHORITY\NetworkService"
+$NetworkServiceSid = "*S-1-5-20"
 
 $Stamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $Log = Join-Path $LogDir ("recovery-install-" + $Stamp + ".log")
@@ -46,21 +51,16 @@ function Copy-Tree {
         [Parameter(Mandatory=$true)][string]$Destination
     )
 
-    if (-not (Test-Path -LiteralPath $Source)) {
-        return
-    }
-
+    if (-not (Test-Path -LiteralPath $Source)) { return }
     New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+
     $Output = (& robocopy.exe `
-        $Source `
-        $Destination `
+        $Source $Destination `
         /E /COPY:DAT /DCOPY:DAT /R:1 /W:1 /XJ /NP /NFL /NDL /NJH /NJS 2>&1 | Out-String).Trim()
     $Code = $LASTEXITCODE
-
     if ($Output) {
         Write-RecoveryLog ("ROBOCOPY: " + ($Output -replace "`r?`n", " | "))
     }
-
     if ($Code -gt 7) {
         throw "Falló el respaldo de $Source. Robocopy=$Code"
     }
@@ -68,22 +68,16 @@ function Copy-Tree {
 
 function Read-RackNovaConfig {
     $Path = Join-Path $ConfigDir "config.json"
-    if (-not (Test-Path -LiteralPath $Path)) {
-        return $null
-    }
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
     return (Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json)
 }
 
 function Read-RackNovaSecrets {
     $Path = Join-Path $ConfigDir "secrets.dat"
-    if (-not (Test-Path -LiteralPath $Path)) {
-        return $null
-    }
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
 
     $Encoded = (Get-Content -LiteralPath $Path -Raw -ErrorAction Stop).Trim()
-    if (-not $Encoded) {
-        return $null
-    }
+    if (-not $Encoded) { return $null }
 
     $Encrypted = [Convert]::FromBase64String($Encoded)
     $Raw = [System.Security.Cryptography.ProtectedData]::Unprotect(
@@ -96,9 +90,7 @@ function Read-RackNovaSecrets {
 }
 
 function Find-LatestDefinitiveResetBackup {
-    if (-not (Test-Path -LiteralPath $BackupsDir)) {
-        return $null
-    }
+    if (-not (Test-Path -LiteralPath $BackupsDir)) { return $null }
 
     $Candidates = Get-ChildItem -LiteralPath $BackupsDir -Directory -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -like "DefinitiveReset-*" } |
@@ -110,9 +102,7 @@ function Find-LatestDefinitiveResetBackup {
         $HasCfg = (Test-Path (Join-Path $Cfg "config.json")) -and
                   (Test-Path (Join-Path $Cfg "secrets.dat"))
         $HasPg = Test-Path (Join-Path $Pg "PG_VERSION")
-        if ($HasCfg -or $HasPg) {
-            return $Candidate.FullName
-        }
+        if ($HasCfg -or $HasPg) { return $Candidate.FullName }
     }
     return $null
 }
@@ -124,15 +114,10 @@ function Recover-InterruptedResetIfNeeded {
 
     $NeedCfg = (-not (Test-Path $CfgPath)) -or (-not (Test-Path $SecretsPath))
     $NeedPg = -not (Test-Path $PgVersion)
-
-    if (-not $NeedCfg -and -not $NeedPg) {
-        return
-    }
+    if (-not $NeedCfg -and -not $NeedPg) { return }
 
     $Source = Find-LatestDefinitiveResetBackup
-    if (-not $Source) {
-        return
-    }
+    if (-not $Source) { return }
 
     Write-RecoveryLog ("Detecté recuperación incompleta. Respaldo candidato: " + $Source)
 
@@ -147,10 +132,9 @@ function Recover-InterruptedResetIfNeeded {
 
     if ($NeedPg) {
         $SourcePg = Join-Path $Source "PostgreSQL-data"
-        if ((Test-Path (Join-Path $SourcePg "PG_VERSION")) -and
-            (-not (Test-Path $PgData) -or @(
-                Get-ChildItem -LiteralPath $PgData -Force -ErrorAction SilentlyContinue
-            ).Count -eq 0)) {
+        $TargetEmpty = (-not (Test-Path $PgData)) -or
+            (@(Get-ChildItem -LiteralPath $PgData -Force -ErrorAction SilentlyContinue).Count -eq 0)
+        if ((Test-Path (Join-Path $SourcePg "PG_VERSION")) -and $TargetEmpty) {
             Write-RecoveryLog "Restaurando copia del cluster previo para diagnosticarlo."
             Copy-Tree -Source $SourcePg -Destination $PgData
         }
@@ -160,21 +144,21 @@ function Recover-InterruptedResetIfNeeded {
 function Stop-ServiceQuiet([string]$Name) {
     $Svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
     if ($Svc -and $Svc.Status -ne "Stopped") {
-        try {
-            Stop-Service -Name $Name -Force -ErrorAction SilentlyContinue
+        try { Stop-Service -Name $Name -Force -ErrorAction SilentlyContinue } catch {}
+        for ($i = 0; $i -lt 20; $i++) {
+            $Current = Get-Service -Name $Name -ErrorAction SilentlyContinue
+            if (-not $Current -or $Current.Status -eq "Stopped") { break }
+            Start-Sleep -Milliseconds 500
         }
-        catch {
-        }
-        Start-Sleep -Seconds 2
     }
 }
 
 function Stop-RackNovaRuntime {
     Stop-ServiceQuiet "RackNovaLocal"
-    Stop-ServiceQuiet "RackNovaPostgreSQL16"
+    Stop-ServiceQuiet $PostgresServiceName
 
     if ((Test-Path $PgCtl) -and (Test-Path $PgData)) {
-        & $PgCtl stop -D $PgData -m fast -w -t 20 2>$null | Out-Null
+        try { & $PgCtl stop -D $PgData -m fast -w -t 20 2>$null | Out-Null } catch {}
     }
 
     $Root = (Join-Path $InstallDir "PostgreSQL\").ToLowerInvariant()
@@ -183,9 +167,7 @@ function Stop-RackNovaRuntime {
             if ($_.Path -and $_.Path.ToLowerInvariant().StartsWith($Root)) {
                 Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
             }
-        }
-        catch {
-        }
+        } catch {}
     }
     Start-Sleep -Seconds 1
 }
@@ -209,72 +191,17 @@ RackNova Local - respaldo previo a reconstrucción PostgreSQL
 Fecha: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 Equipo: $env:COMPUTERNAME
 
-El instalador detectó que PostgreSQL no podía iniciar o autenticar correctamente.
+El recovery detectó que PostgreSQL no podía iniciar o autenticar correctamente.
 Se guardó Config y una copia cruda del cluster anterior ANTES de borrar el cluster activo.
-Si el cluster estaba corrupto, los cambios locales no sincronizados pueden requerir recuperación manual desde esta copia.
+Ninguna reconstrucción se ejecuta sin este respaldo previo.
 "@ | Set-Content -LiteralPath (Join-Path $BackupRoot "README.txt") -Encoding UTF8
 
     Write-RecoveryLog ("BACKUP COMPLETO: " + $BackupRoot)
 }
 
-function Grant-PostgresAcl {
-    if (-not (Test-Path -LiteralPath $PgRoot)) {
-        return
-    }
-
-    $Output = (& icacls.exe `
-        $PgRoot `
-        /inheritance:e `
-        /grant:r `
-        "*S-1-5-18:(OI)(CI)F" `
-        "*S-1-5-32-544:(OI)(CI)F" `
-        /T /C 2>&1 | Out-String).Trim()
-    $Code = $LASTEXITCODE
-
-    if ($Output) {
-        Write-RecoveryLog ("ACL PostgreSQL: " + ($Output -replace "`r?`n", " | "))
-    }
-    if ($Code -ne 0) {
-        throw "No pude reparar ACL de PostgreSQL. Código=$Code"
-    }
-}
-
-function Delete-PostgresService {
-    Stop-ServiceQuiet "RackNovaPostgreSQL16"
-    $Svc = Get-Service -Name "RackNovaPostgreSQL16" -ErrorAction SilentlyContinue
-    if ($Svc) {
-        & sc.exe delete RackNovaPostgreSQL16 | Out-Null
-        for ($i = 0; $i -lt 20; $i++) {
-            if (-not (Get-Service -Name "RackNovaPostgreSQL16" -ErrorAction SilentlyContinue)) {
-                break
-            }
-            Start-Sleep -Milliseconds 500
-        }
-    }
-}
-
-function Register-PostgresService {
-    Delete-PostgresService
-
-    & $PgCtl register -N "RackNovaPostgreSQL16" -D $PgData -S auto
-    if ($LASTEXITCODE -ne 0) {
-        throw "pg_ctl register falló con código $LASTEXITCODE"
-    }
-
-    & sc.exe config RackNovaPostgreSQL16 obj= LocalSystem start= auto | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "No pude configurar RackNovaPostgreSQL16 como LocalSystem."
-    }
-
-    & sc.exe failure RackNovaPostgreSQL16 `
-        reset= 86400 `
-        actions= restart/5000/restart/15000/restart/60000 | Out-Null
-    & sc.exe failureflag RackNovaPostgreSQL16 1 | Out-Null
-}
-
 function Save-PreflightPostgresConfig {
     New-Item -ItemType Directory -Force -Path $PreflightBackup | Out-Null
-    foreach ($Name in @("postgresql.conf", "pg_hba.conf", "postmaster.pid")) {
+    foreach ($Name in @("postgresql.conf", "pg_hba.conf", "postmaster.pid", "postmaster.opts")) {
         $Source = Join-Path $PgData $Name
         if (Test-Path -LiteralPath $Source) {
             Copy-Item -LiteralPath $Source -Destination (Join-Path $PreflightBackup $Name) -Force
@@ -282,11 +209,110 @@ function Save-PreflightPostgresConfig {
     }
 }
 
-function Normalize-PostgresConfig {
-    if (-not (Test-Path -LiteralPath $PgData)) {
-        return
+function Grant-PostgresAcl {
+    New-Item -ItemType Directory -Force -Path $PgRoot, $PgData, $PgLogs | Out-Null
+
+    & icacls.exe $PgRoot /inheritance:e /grant:r `
+        "${NetworkServiceSid}:(OI)(CI)F" `
+        "*S-1-5-18:(OI)(CI)F" `
+        "*S-1-5-32-544:(OI)(CI)F" `
+        /T /C | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "No pude reparar ACL de PostgreSQL para NetworkService."
     }
 
+    & icacls.exe $PgInstall /grant:r `
+        "${NetworkServiceSid}:(OI)(CI)RX" `
+        /T /C | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "No pude otorgar lectura de binarios PostgreSQL a NetworkService."
+    }
+}
+
+function Write-PostgresDiagnostics {
+    try {
+        $ServiceConfig = (& sc.exe qc $PostgresServiceName 2>&1 | Out-String).Trim()
+        if ($ServiceConfig) {
+            Write-RecoveryLog ("POSTGRES SERVICE CONFIG: " + ($ServiceConfig -replace "`r?`n", " | "))
+        }
+    } catch {}
+
+    foreach ($EventLogName in @("Application", "System")) {
+        try {
+            $Since = (Get-Date).AddMinutes(-10)
+            Get-WinEvent `
+                -FilterHashtable @{ LogName = $EventLogName; StartTime = $Since } `
+                -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $_.ProviderName -match "PostgreSQL|Service Control Manager" -or
+                    $_.Message -match "RackNovaPostgreSQL16|postgres|PostgreSQL"
+                } |
+                Select-Object -First 12 |
+                ForEach-Object {
+                    $Message = ($_.Message -replace "`r?`n", " ").Trim()
+                    Write-RecoveryLog ("WINDOWS {0} EVENT {1}/{2}: {3}" -f `
+                        $EventLogName, $_.ProviderName, $_.Id, $Message)
+                }
+        } catch {}
+    }
+
+    try {
+        Get-ChildItem -LiteralPath $PgLogs -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 3 |
+            ForEach-Object {
+                $Tail = (Get-Content -LiteralPath $_.FullName -Tail 80 -ErrorAction SilentlyContinue | Out-String).Trim()
+                if ($Tail) {
+                    Write-RecoveryLog ("POSTGRES LOG " + $_.Name + ": " + ($Tail -replace "`r?`n", " | "))
+                }
+            }
+    } catch {}
+}
+
+function Delete-PostgresService {
+    Stop-ServiceQuiet $PostgresServiceName
+    $Svc = Get-Service -Name $PostgresServiceName -ErrorAction SilentlyContinue
+    if (-not $Svc) { return }
+
+    try { & $PgCtl unregister -N $PostgresServiceName 2>$null | Out-Null } catch {}
+    if (Get-Service -Name $PostgresServiceName -ErrorAction SilentlyContinue) {
+        & sc.exe delete $PostgresServiceName | Out-Null
+    }
+    for ($i = 0; $i -lt 30; $i++) {
+        if (-not (Get-Service -Name $PostgresServiceName -ErrorAction SilentlyContinue)) { break }
+        Start-Sleep -Milliseconds 500
+    }
+}
+
+function Register-PostgresService {
+    Delete-PostgresService
+    Grant-PostgresAcl
+
+    Write-RecoveryLog "Registrando PostgreSQL 16 con NetworkService."
+    & $PgCtl register `
+        -N $PostgresServiceName `
+        -D $PgData `
+        -S auto `
+        -U $PostgresServiceAccount
+    if ($LASTEXITCODE -ne 0) {
+        throw "pg_ctl register falló con código $LASTEXITCODE"
+    }
+
+    & sc.exe config $PostgresServiceName `
+        obj= $PostgresServiceAccount `
+        start= auto | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "No pude configurar RackNovaPostgreSQL16 como NetworkService."
+    }
+
+    & sc.exe failure $PostgresServiceName `
+        reset= 86400 `
+        actions= restart/5000/restart/15000/restart/60000 | Out-Null
+    & sc.exe failureflag $PostgresServiceName 1 | Out-Null
+}
+
+function Normalize-PostgresConfig {
+    if (-not (Test-Path -LiteralPath $PgData)) { return }
     Save-PreflightPostgresConfig
 
     $PostmasterPid = Join-Path $PgData "postmaster.pid"
@@ -297,8 +323,7 @@ function Normalize-PostgresConfig {
                     (Join-Path $InstallDir "PostgreSQL\"),
                     [System.StringComparison]::OrdinalIgnoreCase
                 )
-            }
-            catch { $false }
+            } catch { $false }
         })
         if ($RunningRackNovaPg.Count -eq 0) {
             Remove-Item -LiteralPath $PostmasterPid -Force -ErrorAction SilentlyContinue
@@ -308,19 +333,23 @@ function Normalize-PostgresConfig {
 
     $PgConfig = Join-Path $PgData "postgresql.conf"
     if (Test-Path -LiteralPath $PgConfig) {
+        $PgLogForConfig = ($PgLogs -replace "\\", "/").Replace("'", "''")
         @"
 
 # RackNova Recovery F1.9.3
 listen_addresses = '127.0.0.1'
 port = 54329
 password_encryption = 'scram-sha-256'
+logging_collector = on
+log_directory = '$PgLogForConfig'
+log_filename = 'postgresql-%Y%m%d-%H%M%S.log'
+log_min_messages = info
 "@ | Add-Content -LiteralPath $PgConfig -Encoding UTF8
     }
 
     $PgHba = Join-Path $PgData "pg_hba.conf"
     @"
 # RackNova Local - recovery normalized
-local   all    all                     scram-sha-256
 host    all    all    127.0.0.1/32     scram-sha-256
 host    all    all    ::1/128          scram-sha-256
 "@ | Set-Content -LiteralPath $PgHba -Encoding ASCII
@@ -329,9 +358,7 @@ host    all    all    ::1/128          scram-sha-256
 function Wait-PostgresReady([int]$Attempts = 30) {
     for ($i = 1; $i -le $Attempts; $i++) {
         & $PgIsReady -h 127.0.0.1 -p 54329 -t 2 | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            return $true
-        }
+        if ($LASTEXITCODE -eq 0) { return $true }
         Start-Sleep -Seconds 2
     }
     return $false
@@ -340,16 +367,17 @@ function Wait-PostgresReady([int]$Attempts = 30) {
 function Start-PostgresForProbe {
     try {
         Register-PostgresService
-        Grant-PostgresAcl
-        Start-Service RackNovaPostgreSQL16 -ErrorAction Stop
+        Start-Service $PostgresServiceName -ErrorAction Stop
     }
     catch {
         Write-RecoveryLog ("PostgreSQL no pudo iniciar: " + $_.Exception.Message)
+        Write-PostgresDiagnostics
         return $false
     }
 
-    if (-not (Wait-PostgresReady -Attempts 20)) {
+    if (-not (Wait-PostgresReady -Attempts 30)) {
         Write-RecoveryLog "PostgreSQL arrancó como servicio pero no respondió en 127.0.0.1:54329."
+        Write-PostgresDiagnostics
         return $false
     }
     return $true
@@ -380,8 +408,7 @@ function Invoke-PsqlScalar {
     finally {
         if ($null -eq $Previous) {
             Remove-Item Env:\PGPASSWORD -ErrorAction SilentlyContinue
-        }
-        else {
+        } else {
             $env:PGPASSWORD = $Previous
         }
     }
@@ -390,19 +417,19 @@ function Invoke-PsqlScalar {
 function Repair-RoleAndDatabase($Secrets) {
     $SuperPassword = [string]$Secrets.pg_super_password
     $AppPassword = [string]$Secrets.db_password
-    $EscapedAppPassword = $AppPassword.Replace("'", "''")
+    if (-not $SuperPassword -or -not $AppPassword) { return $false }
 
     $SuperProbe = Invoke-PsqlScalar `
         -User "racknova_super" `
         -Password $SuperPassword `
         -Database "postgres" `
         -Sql "SELECT 1"
-
     if ($SuperProbe.Code -ne 0 -or $SuperProbe.Output -notmatch "1") {
         Write-RecoveryLog ("Credencial racknova_super no pudo autenticar: " + $SuperProbe.Output)
         return $false
     }
 
+    $EscapedAppPassword = $AppPassword.Replace("'", "''")
     $RoleSql = @"
 DO `$`$
 BEGIN
@@ -430,31 +457,26 @@ END
         -Password $SuperPassword `
         -Database "postgres" `
         -Sql "SELECT 1 FROM pg_database WHERE datname='racknova'"
-
-    if ($DbExists.Code -ne 0) {
-        return $false
-    }
+    if ($DbExists.Code -ne 0) { return $false }
 
     if ($DbExists.Output -notmatch "1") {
         $Previous = $env:PGPASSWORD
         try {
             $env:PGPASSWORD = $SuperPassword
-            & $Createdb `
+            $CreatedbOutput = & $Createdb `
                 -h 127.0.0.1 -p 54329 `
                 -U racknova_super `
                 -O racknova_app `
-                racknova 2>&1 | ForEach-Object {
-                    Write-RecoveryLog ("createdb: " + $_)
-                }
+                racknova 2>&1
             if ($LASTEXITCODE -ne 0) {
+                Write-RecoveryLog ("createdb falló: " + (($CreatedbOutput | Out-String).Trim()))
                 return $false
             }
         }
         finally {
             if ($null -eq $Previous) {
                 Remove-Item Env:\PGPASSWORD -ErrorAction SilentlyContinue
-            }
-            else {
+            } else {
                 $env:PGPASSWORD = $Previous
             }
         }
@@ -470,10 +492,7 @@ function Test-AppDatabase($Secrets) {
         -Database "racknova" `
         -Sql "SELECT 1"
 
-    if ($Result.Code -eq 0 -and $Result.Output -match "1") {
-        return $true
-    }
-
+    if ($Result.Code -eq 0 -and $Result.Output -match "1") { return $true }
     Write-RecoveryLog ("Prueba racknova_app falló: " + $Result.Output)
     return $false
 }
@@ -493,10 +512,7 @@ function Try-RepairExistingCluster($Secrets) {
 
     Normalize-PostgresConfig
     Grant-PostgresAcl
-
-    if (-not (Start-PostgresForProbe)) {
-        return $false
-    }
+    if (-not (Start-PostgresForProbe)) { return $false }
 
     if (Test-AppDatabase -Secrets $Secrets) {
         Write-RecoveryLog "CLUSTER CONSERVADO: PostgreSQL 16 y racknova_app responden correctamente."
@@ -516,35 +532,37 @@ function Try-RepairExistingCluster($Secrets) {
 function Initialize-FreshClusterWithExistingSecrets($Secrets) {
     $SuperPassword = [string]$Secrets.pg_super_password
     $AppPassword = [string]$Secrets.db_password
-
     if (-not $SuperPassword -or -not $AppPassword) {
         throw "secrets.dat no contiene las credenciales PostgreSQL requeridas."
     }
 
     Delete-PostgresService
-
     if (Test-Path -LiteralPath $PgData) {
         Remove-Item -LiteralPath $PgData -Recurse -Force -ErrorAction Stop
     }
-    New-Item -ItemType Directory -Force -Path $PgData | Out-Null
+    New-Item -ItemType Directory -Force -Path $PgData, $PgLogs | Out-Null
 
     $PwFile = Join-Path $BackupRoot "postgres-super.recovery.tmp"
+    New-Item -ItemType Directory -Force -Path $BackupRoot | Out-Null
     Set-Content -LiteralPath $PwFile -Value $SuperPassword -Encoding ASCII -NoNewline
     & icacls.exe $PwFile /inheritance:r /grant:r `
         "*S-1-5-18:F" "*S-1-5-32-544:F" | Out-Null
 
     try {
         Write-RecoveryLog "RECONSTRUCCION: ejecutando initdb PostgreSQL 16."
-        & $InitDb `
+        $InitOutput = & $InitDb `
             -D $PgData `
             -U racknova_super `
             -E UTF8 `
             --locale=C `
             --auth=scram-sha-256 `
             --pwfile=$PwFile `
-            --no-instructions 2>&1 | ForEach-Object {
-                Write-RecoveryLog ("initdb: " + $_)
+            --no-instructions 2>&1
+        foreach ($Line in $InitOutput) {
+            if ($null -ne $Line -and ([string]$Line).Trim()) {
+                Write-RecoveryLog ("initdb: " + [string]$Line)
             }
+        }
         if ($LASTEXITCODE -ne 0) {
             throw "initdb terminó con código $LASTEXITCODE"
         }
@@ -556,16 +574,16 @@ function Initialize-FreshClusterWithExistingSecrets($Secrets) {
     Normalize-PostgresConfig
     Grant-PostgresAcl
     Register-PostgresService
+    Start-Service $PostgresServiceName -ErrorAction Stop
 
-    Start-Service RackNovaPostgreSQL16 -ErrorAction Stop
-    if (-not (Wait-PostgresReady -Attempts 30)) {
+    if (-not (Wait-PostgresReady -Attempts 40)) {
+        Write-PostgresDiagnostics
         throw "PostgreSQL reconstruido no respondió en 127.0.0.1:54329."
     }
 
     if (-not (Repair-RoleAndDatabase -Secrets $Secrets)) {
         throw "No pude crear racknova_app/racknova tras reconstruir PostgreSQL."
     }
-
     if (-not (Test-AppDatabase -Secrets $Secrets)) {
         throw "La base reconstruida no acepta las credenciales RackNova preservadas."
     }
@@ -593,16 +611,13 @@ function Invoke-BaseConfigure {
             Write-RecoveryLog ("BASE: " + [string]$Line)
         }
     }
-
     if ($Code -ne 0) {
         throw "configure_install.ps1 terminó con código $Code."
     }
 }
 
 function Try-BootstrapCloudAfterRebuild {
-    if (-not $DidRebuild) {
-        return
-    }
+    if (-not $DidRebuild) { return }
 
     try {
         $Cfg = Read-RackNovaConfig
@@ -610,7 +625,6 @@ function Try-BootstrapCloudAfterRebuild {
             Write-RecoveryLog "Cloud bootstrap omitido: instalación no activada o sin cloud_url."
             return
         }
-
         if (-not (Test-Path -LiteralPath $BootstrapCloud)) {
             Write-RecoveryLog "Cloud bootstrap omitido: falta bootstrap_cloud_snapshot.ps1."
             return
@@ -646,7 +660,8 @@ $ExitCode = 1
 try {
     Write-RecoveryLog "RackNova F1.9.3 Recovery iniciado."
     Write-RecoveryLog ("InstallDir=" + $InstallDir)
-    Write-RecoveryLog "POLITICA: respaldo antes de cualquier reconstrucción; conservar cluster sano; reconstruir cluster roto."
+    Write-RecoveryLog "POLITICA: respaldo antes de reconstruir; conservar cluster sano; reconstruir sólo cluster irrecuperable."
+    Write-RecoveryLog "POSTGRES SERVICE ACCOUNT: NT AUTHORITY\NetworkService (SID S-1-5-20)."
 
     foreach ($Required in @($Ctl, $BaseConfigure, $InitDb, $PgCtl, $PgIsReady, $Psql, $Createdb)) {
         if (-not (Test-Path -LiteralPath $Required)) {
@@ -658,7 +673,7 @@ try {
         (Test-Path (Join-Path $ConfigDir "config.json")) -or `
         (Test-Path (Join-Path $ConfigDir "secrets.dat")) -or `
         (Test-Path $PgData) -or `
-        [bool](Get-Service -Name "RackNovaPostgreSQL16" -ErrorAction SilentlyContinue) -or `
+        [bool](Get-Service -Name $PostgresServiceName -ErrorAction SilentlyContinue) -or `
         [bool](Get-Service -Name "RackNovaLocal" -ErrorAction SilentlyContinue)
 
     if (-not $Existing) {
@@ -676,8 +691,7 @@ try {
     $Secrets = Read-RackNovaSecrets
 
     if (-not $Secrets) {
-        $HasMeaningfulConfig = $null -ne $Config
-        if ($HasMeaningfulConfig) {
+        if ($null -ne $Config) {
             throw (
                 "Existe configuración RackNova pero secrets.dat no puede recuperarse. " +
                 "No reconstruiré PostgreSQL sin preservar credenciales. Revisa " + $BackupRoot
@@ -718,6 +732,7 @@ catch {
         if ($_.ScriptStackTrace) {
             Write-RecoveryLog ("STACK: " + ($_.ScriptStackTrace -replace "`r?`n", " | "))
         }
+        Write-PostgresDiagnostics
         Write-RecoveryLog ("BACKUP DISPONIBLE: " + $BackupRoot)
 
         try {
@@ -727,12 +742,8 @@ catch {
                     Write-RecoveryLog ("DIAG: " + [string]$Line)
                 }
             }
-        }
-        catch {
-        }
-    }
-    catch {
-    }
+        } catch {}
+    } catch {}
     $ExitCode = 1
 }
 finally {
