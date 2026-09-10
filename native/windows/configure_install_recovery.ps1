@@ -76,6 +76,11 @@ function Read-RackNovaSecrets {
     $Path = Join-Path $ConfigDir "secrets.dat"
     if (-not (Test-Path -LiteralPath $Path)) { return $null }
 
+    # Windows PowerShell 5.1 no siempre carga System.Security automáticamente.
+    # RackNova guarda secrets.dat con DPAPI LocalMachine; cargamos explícitamente
+    # el assembly antes de resolver ProtectedData.
+    Add-Type -AssemblyName System.Security -ErrorAction Stop
+
     $Encoded = (Get-Content -LiteralPath $Path -Raw -ErrorAction Stop).Trim()
     if (-not $Encoded) { return $null }
 
