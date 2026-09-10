@@ -1,0 +1,559 @@
+name: Build and test RackNova F1.9.4 Owner Reset
+
+on:
+  push:
+    branches:
+      - installer-owner-reset-f1-9-4
+    paths:
+      - .github/workflows/package-test-racknova-f1-9-3-recovery.yml
+      - native/windows/RackNovaRecovery.iss
+      - native/windows/configure_install_recovery.ps1
+      - native/windows/configure_install.ps1
+      - native/windows/racknova_ctl.py
+      - native/windows/racknova_service.py
+      - native/windows/racknova_native_entry.py
+      - native/windows/racknova_local_owner_reset.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-and-recovery-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      HOTFIX_ARTIFACT_ID: "10081223979"
+      PG_URL: "https://get.enterprisedb.com/postgresql/postgresql-16.15-1-windows-x64.exe"
+      PG_SHA256: "DE926FEFAD00E313E212CD438C0F04BF033E200099AD56C012724EFCEBED79F2"
+
+    steps:
+      - name: Checkout recovery branch
+        uses: actions/checkout@v5
+
+      - name: Validate PowerShell syntax
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          foreach ($script in @(
+            "native/windows/configure_install_recovery.ps1",
+            "native/windows/configure_install.ps1"
+          )) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script).Path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $details = ($errors | ForEach-Object {
+                "line=$($_.Extent.StartLineNumber) $($_.Message)"
+              }) -join " | "
+              throw "PowerShell inválido en ${script}: $details"
+            }
+          }
+
+          $text = Get-Content native/windows/configure_install_recovery.ps1 -Raw
+          if ($text -match 'Replace-RequiredText|\.Replace\([^\r\n]*configure_install') {
+            throw "Recovery no debe reescribir configure_install.ps1 por coincidencias de texto."
+          }
+          if ($text -notmatch 'Backup-ClusterBeforeRebuild') {
+            throw "Recovery debe respaldar cluster antes de reconstrucción."
+          }
+          if ($text -notmatch 'initdb') {
+            throw "Recovery debe contener reconstrucción PostgreSQL real con initdb."
+          }
+
+      - name: Download verified RackNova binaries
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          gh api "/repos/${{ github.repository }}/actions/artifacts/$env:HOTFIX_ARTIFACT_ID/zip" > hotfix.zip
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Expand-Archive hotfix.zip -DestinationPath dist -Force
+          if (-not (Test-Path "dist/RackNovaCtl.exe")) { throw "Falta RackNovaCtl.exe" }
+          if (-not (Test-Path "dist/RackNovaLocalService/RackNovaLocalService.exe")) {
+            throw "Falta RackNovaLocalService.exe"
+          }
+
+      - name: Checkout Dashboard owner reset branch
+        uses: actions/checkout@v5
+        with:
+          repository: racknova096-dot/racknova-dashboard
+          ref: feature/local-owner-reset-20260910
+          path: _dashboard
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.3"
+
+      - name: Build Dashboard Local with owner reset
+        working-directory: _dashboard
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          from pathlib import Path
+          import re
+
+          config_path = Path("src/config.ts")
+          text = config_path.read_text(encoding="utf-8")
+          pattern = re.compile(
+              r"export\s+const\s+API_URL\s*=\s*.*?;",
+              re.DOTALL,
+          )
+          replacement = (
+              'export const API_URL =\n'
+              '  import.meta.env.VITE_API_URL ||\n'
+              '  (typeof window !== "undefined" ? window.location.origin : "");'
+          )
+          updated, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f"No pude sustituir API_URL: coincidencias={count}")
+          config_path.write_text(updated, encoding="utf-8")
+
+          app_path = Path("src/App.tsx")
+          app_text = app_path.read_text(encoding="utf-8")
+          old_router = "<BrowserRouter>"
+          new_router = '<BrowserRouter basename="/ui">'
+          if new_router not in app_text:
+              if app_text.count(old_router) != 1:
+                  raise SystemExit("No pude configurar BrowserRouter basename=/ui.")
+              app_text = app_text.replace(old_router, new_router, 1)
+          app_path.write_text(app_text, encoding="utf-8")
+          '@ | Set-Content ../_patch_dashboard_local.py -Encoding UTF8
+
+          python ../_patch_dashboard_local.py
+          Remove-Item ../_patch_dashboard_local.py
+
+          $Package = Get-Content -LiteralPath "package.json" -Raw | ConvertFrom-Json -AsHashtable
+          if (-not $Package.ContainsKey("dependencies")) { $Package["dependencies"] = @{} }
+          if (-not $Package.ContainsKey("devDependencies")) { $Package["devDependencies"] = @{} }
+          $DuplicateNames = @(
+            $Package["dependencies"].Keys |
+              Where-Object { $Package["devDependencies"].ContainsKey($_) }
+          )
+          foreach ($Name in $DuplicateNames) {
+            $ProdVersion = [string]$Package["dependencies"][$Name]
+            $DevVersion = [string]$Package["devDependencies"][$Name]
+            if ($ProdVersion -ne $DevVersion) {
+              throw "Dependencia duplicada con versiones distintas: $Name"
+            }
+            $Package["devDependencies"].Remove($Name)
+          }
+          $Package | ConvertTo-Json -Depth 100 |
+            Set-Content -LiteralPath "package.json" -Encoding utf8NoBOM
+
+          if (Test-Path "bun.lock") {
+            Write-Host "bun.lock detectado."
+          }
+          elseif (Test-Path "bun.lockb") {
+            bun install --save-text-lockfile --lockfile-only
+            if ($LASTEXITCODE -ne 0) { throw "Migración bun.lockb falló." }
+          }
+          else {
+            throw "Dashboard sin lockfile."
+          }
+
+          bun ci
+          if ($LASTEXITCODE -ne 0) { throw "bun ci falló." }
+
+          bunx --bun tsc --noEmit -p tsconfig.app.json
+          if ($LASTEXITCODE -ne 0) { throw "TypeScript validation falló." }
+
+          bun run build -- --base=/ui/
+          if ($LASTEXITCODE -ne 0) { throw "Vite build falló." }
+          if (-not (Test-Path "dist/index.html")) { throw "Dashboard sin dist/index.html." }
+
+      - name: Copy owner reset Dashboard dist
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $target = "native/windows/dashboard_dist"
+          Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue
+          Copy-Item "_dashboard/dist" $target -Recurse -Force
+          if (-not (Test-Path "$target/index.html")) { throw "No se copió dashboard_dist." }
+
+      - name: Build fresh Windows binaries from recovery branch
+        shell: pwsh
+        timeout-minutes: 12
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (-not (Test-Path "native/windows/dashboard_dist/index.html")) {
+            throw "El dashboard local actualizado no está disponible."
+          }
+
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller==6.15.0 pywin32 tzdata
+
+          python -m py_compile `
+            main.py `
+            database.py `
+            racknova_runtime.py `
+            racknova_outbox.py `
+            racknova_sync_capture.py `
+            racknova_sync_worker.py `
+            multiempresa_tenant.py `
+            pos_module.py `
+            pos_phase3.py `
+            native/windows/racknova_secrets.py `
+            native/windows/racknova_native_config.py `
+            native/windows/racknova_native_entry.py `
+            native/windows/racknova_local_owner_reset.py `
+            native/windows/racknova_service.py `
+            native/windows/racknova_ctl.py
+
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --onedir `
+            --contents-directory _service_internal `
+            --name RackNovaLocalService `
+            --icon native/windows/racknova.ico `
+            --paths . `
+            --paths native/windows `
+            --hidden-import win32timezone `
+            --hidden-import servicemanager `
+            --hidden-import win32serviceutil `
+            --hidden-import win32service `
+            --hidden-import win32event `
+            --collect-all tzdata `
+            --collect-all psycopg2 `
+            --hidden-import passlib.handlers.bcrypt `
+            --collect-all bcrypt `
+            --add-data "native/windows/dashboard_dist;dashboard_dist" `
+            --add-data "001_multiempresa_fase1.sql;." `
+            --add-data "002_multiempresa_fase2_local_first.sql;." `
+            native/windows/racknova_service.py
+          if (-not (Test-Path "dist/RackNovaLocalService/RackNovaLocalService.exe")) { throw "No se reconstruyó RackNovaLocalService.exe" }
+
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --name RackNovaCtl `
+            --icon native/windows/racknova.ico `
+            --paths . `
+            --paths native/windows `
+            --collect-all tzdata `
+            --collect-all psycopg2 `
+            --hidden-import passlib.handlers.bcrypt `
+            --collect-all bcrypt `
+            --add-data "001_multiempresa_fase1.sql;." `
+            --add-data "002_multiempresa_fase2_local_first.sql;." `
+            native/windows/racknova_ctl.py
+          if (-not (Test-Path "dist/RackNovaCtl.exe")) { throw "No se reconstruyó RackNovaCtl.exe" }
+
+      - name: Prepare portable PostgreSQL 16.15
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force native/windows/vendor | Out-Null
+          $installer = (Resolve-Path "native/windows/vendor").Path + "\postgresql-16.15-1-windows-x64.exe"
+          Invoke-WebRequest -Uri $env:PG_URL -OutFile $installer
+
+          $actual = (Get-FileHash $installer -Algorithm SHA256).Hash.ToUpperInvariant()
+          if ($actual -ne $env:PG_SHA256.ToUpperInvariant()) {
+            throw "SHA256 PostgreSQL inválido: $actual"
+          }
+
+          $nativeRoot = (Resolve-Path "native/windows").Path
+          $extractRoot = Join-Path $nativeRoot "postgres_extract"
+          $target = Join-Path $nativeRoot "postgresql_portable"
+          Remove-Item $extractRoot -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $extractRoot | Out-Null
+
+          $args = @(
+            "--extract-only", "1",
+            "--mode", "unattended",
+            "--unattendedmodeui", "none",
+            "--install_runtimes", "0",
+            "--prefix", "`"$extractRoot`""
+          )
+          $proc = Start-Process -FilePath $installer -ArgumentList $args -PassThru
+          if (-not $proc.WaitForExit(300000)) {
+            & taskkill.exe /PID $proc.Id /T /F | Out-Null
+            throw "Extracción PostgreSQL excedió 5 minutos"
+          }
+          $proc.Refresh()
+          if ($proc.ExitCode -ne 0) {
+            throw "PostgreSQL extract-only terminó con código $($proc.ExitCode)"
+          }
+
+          $initdb = Get-ChildItem -Path $extractRoot -Filter initdb.exe -File -Recurse | Select-Object -First 1
+          if (-not $initdb) { throw "No se encontró initdb.exe" }
+          $pgsqlRoot = $initdb.Directory.Parent.FullName
+          New-Item -ItemType Directory -Force $target | Out-Null
+          Copy-Item (Join-Path $pgsqlRoot "*") $target -Recurse -Force
+
+          foreach ($relative in @(
+            "bin\initdb.exe", "bin\pg_ctl.exe", "bin\pg_isready.exe",
+            "bin\psql.exe", "bin\createdb.exe", "bin\postgres.exe"
+          )) {
+            if (-not (Test-Path (Join-Path $target $relative))) {
+              throw "PostgreSQL portable incompleto: falta $relative"
+            }
+          }
+          Remove-Item $extractRoot -Recurse -Force
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Compile F1.9.3 Recovery installer
+        working-directory: native/windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $iscc)) { throw "No encontré ISCC.exe" }
+
+          & $iscc RackNovaRecovery.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup Recovery falló" }
+
+          $setup = "output/RackNova_Setup_F1_9_4.exe"
+          if (-not (Test-Path $setup)) { throw "No se generó $setup" }
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToUpperInvariant()
+          $hash | Set-Content output/SHA256_RECOVERY.txt
+          Write-Host "RECOVERY SHA256=$hash"
+
+      - name: Create bounded installer runner
+        shell: pwsh
+        run: |
+          $helper = @'
+          function Invoke-RackNovaInstaller {
+            param(
+              [Parameter(Mandatory = $true)][string]$Installer,
+              [Parameter(Mandatory = $true)][string]$LogPath,
+              [Parameter(Mandatory = $true)][string]$Phase,
+              [int]$TimeoutSeconds = 900
+            )
+
+            Remove-Item -LiteralPath $LogPath -Force -ErrorAction SilentlyContinue
+            $arguments = @(
+              "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-",
+              "/LOG=$LogPath"
+            )
+
+            Write-Host "Starting $Phase installer with timeout=${TimeoutSeconds}s"
+            $proc = Start-Process -FilePath $Installer -ArgumentList $arguments -PassThru
+            $finished = $proc.WaitForExit($TimeoutSeconds * 1000)
+
+            if (-not $finished) {
+              Write-Host "::error::$Phase timed out after $TimeoutSeconds seconds"
+              if (Test-Path -LiteralPath $LogPath) {
+                Write-Host "===== Inno Setup log tail: $LogPath ====="
+                Get-Content -LiteralPath $LogPath -Tail 400 | Out-Host
+              }
+              Write-Host "===== Candidate child/process diagnostics ====="
+              Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                Where-Object {
+                  $_.Name -match 'setup|powershell|pwsh|postgres|pg_ctl|initdb|RackNova' -or
+                  $_.ParentProcessId -eq $proc.Id
+                } |
+                Select-Object ProcessId, ParentProcessId, Name, CommandLine |
+                Format-Table -AutoSize | Out-String | Write-Host
+              try { & taskkill.exe /PID $proc.Id /T /F | Out-Host } catch {}
+              throw "$Phase excedió el límite de $TimeoutSeconds segundos"
+            }
+
+            $proc.Refresh()
+            if ($proc.ExitCode -ne 0) {
+              Write-Host "::error::$Phase failed with exit code $($proc.ExitCode)"
+              if (Test-Path -LiteralPath $LogPath) {
+                Write-Host "===== Inno Setup log tail: $LogPath ====="
+                Get-Content -LiteralPath $LogPath -Tail 400 | Out-Host
+              }
+              throw "$Phase falló: $($proc.ExitCode)"
+            }
+
+            Write-Host "$Phase installer completed successfully."
+          }
+          '@
+          $helperPath = Join-Path $env:RUNNER_TEMP "racknova-installer-smoke.ps1"
+          Set-Content -LiteralPath $helperPath -Value $helper -Encoding UTF8
+          Write-Host "Helper created: $helperPath"
+
+      - name: Smoke test clean install
+        shell: pwsh
+        timeout-minutes: 18
+        run: |
+          $ErrorActionPreference = "Stop"
+          . (Join-Path $env:RUNNER_TEMP "racknova-installer-smoke.ps1")
+          $setup = (Resolve-Path "native/windows/output/RackNova_Setup_F1_9_4.exe").Path
+          Invoke-RackNovaInstaller -Installer $setup -LogPath "C:\racknova-clean-install.log" -Phase "Clean install" -TimeoutSeconds 900
+
+          $ctl = "C:\Program Files\RackNova\RackNovaCtl.exe"
+          if (-not (Test-Path $ctl)) { throw "Falta RackNovaCtl.exe instalado" }
+
+          for ($i=0; $i -lt 30; $i++) {
+            & $ctl health | Out-Host
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds 2
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Health falló después de clean install" }
+
+          foreach ($name in @("RackNovaLocal", "RackNovaPostgreSQL16")) {
+            $svc = Get-Service $name -ErrorAction Stop
+            if ($svc.Status -ne "Running") { throw "$name no está Running" }
+          }
+
+          # La ruta existe únicamente en Native y debe exigir autenticación.
+          try {
+            $unexpected = Invoke-WebRequest -Uri "http://127.0.0.1:8000/racknova-native/owner-reset/capability" -UseBasicParsing -TimeoutSec 5
+            throw "owner-reset/capability respondió sin autenticación: $($unexpected.StatusCode)"
+          }
+          catch {
+            if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 401) {
+              Write-Host "Owner reset protegido correctamente: HTTP 401 sin token."
+            }
+            elseif ($_.Exception.Message -like "*respondió sin autenticación*") {
+              throw
+            }
+            else {
+              throw "No pude validar protección owner-reset: $($_.Exception.Message)"
+            }
+          }
+
+          $version = (Get-Content "C:\ProgramData\RackNova\PostgreSQL\data\PG_VERSION" -Raw).Trim()
+          if (-not $version.StartsWith("16")) { throw "PG_VERSION inesperado: $version" }
+
+      - name: Smoke test healthy repair preserves PostgreSQL
+        shell: pwsh
+        timeout-minutes: 18
+        run: |
+          $ErrorActionPreference = "Stop"
+          . (Join-Path $env:RUNNER_TEMP "racknova-installer-smoke.ps1")
+          $setup = (Resolve-Path "native/windows/output/RackNova_Setup_F1_9_4.exe").Path
+          Invoke-RackNovaInstaller -Installer $setup -LogPath "C:\racknova-healthy-repair.log" -Phase "Healthy repair" -TimeoutSeconds 900
+
+          $log = Get-ChildItem "C:\ProgramData\RackNova\Logs" -Filter "recovery-install-*.log" |
+            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          if (-not $log) { throw "Healthy repair no generó recovery-install log" }
+          $text = Get-Content $log.FullName -Raw
+          if ($text -notmatch "RESULTADO: PostgreSQL=CONSERVADO") {
+            throw "Healthy repair no confirmó conservación de PostgreSQL. Log=$($log.FullName)"
+          }
+          if ($text -match "RECONSTRUCCION COMPLETA") {
+            throw "Healthy repair reconstruyó PostgreSQL sin necesidad."
+          }
+
+          $ctl = "C:\Program Files\RackNova\RackNovaCtl.exe"
+          & $ctl health | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "Health falló después de healthy repair" }
+
+      - name: Break PostgreSQL deliberately
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Stop-Service RackNovaLocal -Force -ErrorAction SilentlyContinue
+          Stop-Service RackNovaPostgreSQL16 -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+
+          $pgVersion = "C:\ProgramData\RackNova\PostgreSQL\data\PG_VERSION"
+          if (-not (Test-Path $pgVersion)) { throw "No existe PG_VERSION para la prueba" }
+          Set-Content -LiteralPath $pgVersion -Value "BROKEN-BY-SMOKE-TEST" -Encoding ASCII
+          Write-Host "PostgreSQL intencionalmente roto: PG_VERSION= BROKEN-BY-SMOKE-TEST"
+
+      - name: Smoke test broken PostgreSQL reconstruction
+        shell: pwsh
+        timeout-minutes: 18
+        run: |
+          $ErrorActionPreference = "Stop"
+          . (Join-Path $env:RUNNER_TEMP "racknova-installer-smoke.ps1")
+          $setup = (Resolve-Path "native/windows/output/RackNova_Setup_F1_9_4.exe").Path
+          Invoke-RackNovaInstaller -Installer $setup -LogPath "C:\racknova-broken-recovery.log" -Phase "Broken PostgreSQL recovery" -TimeoutSeconds 900
+
+          $log = Get-ChildItem "C:\ProgramData\RackNova\Logs" -Filter "recovery-install-*.log" |
+            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          if (-not $log) { throw "Broken recovery no generó recovery-install log" }
+          $text = Get-Content $log.FullName -Raw
+          Write-Host $text
+          if ($text -notmatch "RECONSTRUCCION COMPLETA") {
+            throw "La prueba rota no ejecutó reconstrucción real."
+          }
+          if ($text -notmatch "RESULTADO: PostgreSQL=RECONSTRUIDO") {
+            throw "El resultado no confirmó PostgreSQL reconstruido."
+          }
+
+          $version = (Get-Content "C:\ProgramData\RackNova\PostgreSQL\data\PG_VERSION" -Raw).Trim()
+          if (-not $version.StartsWith("16")) { throw "PG_VERSION no fue reconstruido: $version" }
+
+          $backup = Get-ChildItem "C:\ProgramData\RackNova\Backups" -Directory -Filter "Recovery-*" |
+            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          if (-not $backup) { throw "No se creó backup Recovery-*" }
+          $backupVersion = Join-Path $backup.FullName "PostgreSQL-data\PG_VERSION"
+          if (-not (Test-Path $backupVersion)) { throw "El backup no contiene el cluster previo" }
+          $old = (Get-Content $backupVersion -Raw).Trim()
+          if ($old -ne "BROKEN-BY-SMOKE-TEST") {
+            throw "El backup no corresponde al cluster roto: $old"
+          }
+
+          $ctl = "C:\Program Files\RackNova\RackNovaCtl.exe"
+          for ($i=0; $i -lt 30; $i++) {
+            & $ctl health | Out-Host
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds 2
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Health falló tras reconstrucción" }
+
+          foreach ($name in @("RackNovaLocal", "RackNovaPostgreSQL16")) {
+            $svc = Get-Service $name -ErrorAction Stop
+            if ($svc.Status -ne "Running") { throw "$name no está Running tras recovery" }
+          }
+
+          Write-Host "SMOKE OK: clean install + preserve healthy PG + reconstruct broken PG + backup verified"
+
+      - name: Collect smoke diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force smoke-output | Out-Null
+          foreach ($path in @(
+            "C:\racknova-clean-install.log",
+            "C:\racknova-healthy-repair.log",
+            "C:\racknova-broken-recovery.log"
+          )) {
+            if (Test-Path $path) { Copy-Item $path smoke-output -Force }
+          }
+          if (Test-Path "C:\ProgramData\RackNova\Logs") {
+            Copy-Item "C:\ProgramData\RackNova\Logs" "smoke-output\RackNova-Logs" -Recurse -Force
+          }
+          if (Test-Path "C:\ProgramData\RackNova\Backups") {
+            Get-ChildItem "C:\ProgramData\RackNova\Backups" -Directory |
+              Select-Object Name, LastWriteTimeUtc |
+              Format-Table -AutoSize |
+              Out-String | Set-Content smoke-output\backup-list.txt
+          }
+
+      - name: Upload smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: RackNova-F1-9-4-OWNER-RESET-SMOKE
+          path: smoke-output
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload tested recovery installer
+        uses: actions/upload-artifact@v6
+        with:
+          name: RackNova-F1-9-4-OWNER-RESET-TESTED
+          path: |
+            native/windows/output/RackNova_Setup_F1_9_4.exe
+            native/windows/output/SHA256_RECOVERY.txt
+          if-no-files-found: error
+          retention-days: 14
