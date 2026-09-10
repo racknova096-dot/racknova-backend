@@ -1,0 +1,47 @@
+name: Validate Local Owner Reset
+
+on:
+  push:
+    branches:
+      - feature/local-owner-reset
+    paths:
+      - "native/windows/racknova_owner_reset.py"
+      - "native/windows/racknova_native_entry.py"
+      - ".github/workflows/validate-local-owner-reset.yml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout backend branch
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate backend Python syntax
+        run: |
+          python -m py_compile native/windows/racknova_owner_reset.py
+          python -m py_compile native/windows/racknova_native_entry.py
+
+      - name: Checkout dashboard branch
+        uses: actions/checkout@v4
+        with:
+          repository: racknova096-dot/racknova-dashboard
+          ref: feature/local-owner-reset
+          path: dashboard
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: npm install --no-audit --no-fund
+
+      - name: Build dashboard
+        working-directory: dashboard
+        run: npm run build
