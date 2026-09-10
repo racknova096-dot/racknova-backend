@@ -1,0 +1,167 @@
+name: Validate owner local reset
+
+on:
+  push:
+    branches:
+      - feature/owner-local-reset-20260910
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout backend feature
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.3"
+
+      - name: Compile backend owner reset
+        shell: pwsh
+        run: |
+          python -m py_compile native/windows/racknova_owner_reset.py native/windows/racknova_native_entry.py
+
+      - name: Install backend build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller==6.15.0 pywin32 tzdata
+
+      - name: Checkout dashboard feature
+        uses: actions/checkout@v5
+        with:
+          repository: racknova096-dot/racknova-dashboard
+          ref: feature/owner-local-reset-20260910
+          path: _dashboard
+
+      - name: Prepare Dashboard for Local same-origin API
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+          import re
+
+          config_path = Path("_dashboard/src/config.ts")
+          text = config_path.read_text(encoding="utf-8")
+          pattern = re.compile(r"export\s+const\s+API_URL\s*=\s*.*?;", re.DOTALL)
+          replacement = (
+              'export const API_URL =\n'
+              '  import.meta.env.VITE_API_URL ||\n'
+              '  (typeof window !== "undefined" ? window.location.origin : "");'
+          )
+          updated, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f"No pude sustituir API_URL: {count}")
+          config_path.write_text(updated, encoding="utf-8")
+
+          app_path = Path("_dashboard/src/App.tsx")
+          app_text = app_path.read_text(encoding="utf-8")
+          if '<BrowserRouter basename="/ui">' not in app_text:
+              if app_text.count("<BrowserRouter>") != 1:
+                  raise SystemExit("No pude configurar basename=/ui")
+              app_text = app_text.replace("<BrowserRouter>", '<BrowserRouter basename="/ui">', 1)
+          app_path.write_text(app_text, encoding="utf-8")
+          '@ | Set-Content _patch_dashboard_local.py -Encoding UTF8
+          python _patch_dashboard_local.py
+
+      - name: Build Dashboard feature
+        working-directory: _dashboard
+        shell: pwsh
+        run: |
+          $Package = Get-Content -LiteralPath "package.json" -Raw | ConvertFrom-Json -AsHashtable
+          if (-not $Package.ContainsKey("dependencies")) { $Package["dependencies"] = @{} }
+          if (-not $Package.ContainsKey("devDependencies")) { $Package["devDependencies"] = @{} }
+
+          $DuplicateNames = @(
+            $Package["dependencies"].Keys |
+            Where-Object { $Package["devDependencies"].ContainsKey($_) }
+          )
+          foreach ($Name in $DuplicateNames) {
+            $ProdVersion = [string]$Package["dependencies"][$Name]
+            $DevVersion = [string]$Package["devDependencies"][$Name]
+            if ($ProdVersion -ne $DevVersion) {
+              throw "Dependencia duplicada con versiones distintas: $Name"
+            }
+            $Package["devDependencies"].Remove($Name)
+          }
+
+          $Package | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath "package.json" -Encoding utf8NoBOM
+
+          if (Test-Path "bun.lockb") {
+            bun install --save-text-lockfile --lockfile-only
+            if ($LASTEXITCODE -ne 0) { throw "No pude migrar bun.lockb" }
+          }
+
+          bun ci
+          if ($LASTEXITCODE -ne 0) { throw "bun ci falló" }
+
+          bunx --bun tsc --noEmit -p tsconfig.app.json
+          if ($LASTEXITCODE -ne 0) { throw "TypeScript falló" }
+
+          bun run build -- --base=/ui/
+          if ($LASTEXITCODE -ne 0) { throw "Vite build falló" }
+
+      - name: Copy dashboard dist
+        shell: pwsh
+        run: |
+          if (Test-Path "native/windows/dashboard_dist") {
+            Remove-Item "native/windows/dashboard_dist" -Recurse -Force
+          }
+          Copy-Item "_dashboard/dist" "native/windows/dashboard_dist" -Recurse
+
+      - name: Build RackNovaLocalService with owner reset
+        shell: pwsh
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --onedir `
+            --contents-directory _service_internal `
+            --name RackNovaLocalService `
+            --icon native/windows/racknova.ico `
+            --paths . `
+            --paths native/windows `
+            --hidden-import win32timezone `
+            --hidden-import servicemanager `
+            --hidden-import win32serviceutil `
+            --hidden-import win32service `
+            --hidden-import win32event `
+            --collect-all tzdata `
+            --collect-all psycopg2 `
+            --hidden-import passlib.handlers.bcrypt `
+            --collect-all bcrypt `
+            --add-data "native/windows/dashboard_dist;dashboard_dist" `
+            --add-data "001_multiempresa_fase1.sql;." `
+            --add-data "002_multiempresa_fase2_local_first.sql;." `
+            native/windows/racknova_service.py
+
+          if (-not (Test-Path "dist/RackNovaLocalService/RackNovaLocalService.exe")) {
+            throw "PyInstaller no generó RackNovaLocalService.exe"
+          }
+
+      - name: Verify owner reset module packaged
+        shell: pwsh
+        run: |
+          $analysis = Get-ChildItem -Recurse -Filter "warn-RackNovaLocalService.txt" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($analysis) {
+            $warnings = Get-Content $analysis.FullName -Raw
+            if ($warnings -match "racknova_owner_reset") {
+              Write-Host $warnings
+              throw "PyInstaller reportó problema con racknova_owner_reset"
+            }
+          }
+          Write-Host "Owner reset backend + dashboard + PyInstaller: OK"
