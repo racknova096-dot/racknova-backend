@@ -550,8 +550,18 @@ function Initialize-FreshClusterWithExistingSecrets($Secrets) {
     $PwFile = Join-Path $BackupRoot "postgres-super.recovery.tmp"
     New-Item -ItemType Directory -Force -Path $BackupRoot | Out-Null
     Set-Content -LiteralPath $PwFile -Value $SuperPassword -Encoding ASCII -NoNewline
+
+    # initdb puede ejecutarse con un token restringido aun cuando Setup esté
+    # elevado. Por eso no basta con conceder acceso a Administrators: el SID
+    # del usuario que lanzó la recuperación debe conservar lectura explícita.
+    $CurrentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     & icacls.exe $PwFile /inheritance:r /grant:r `
-        "*S-1-5-18:F" "*S-1-5-32-544:F" | Out-Null
+        "*S-1-5-18:F" `
+        "*S-1-5-32-544:F" `
+        "*${CurrentSid}:F" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "No pude proteger el archivo temporal de initdb."
+    }
 
     try {
         Write-RecoveryLog "RECONSTRUCCION: ejecutando initdb PostgreSQL 16."
