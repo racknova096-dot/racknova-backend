@@ -5,7 +5,7 @@ on:
     branches:
       - installer-owner-reset-f1-9-4
     paths:
-      - .github/workflows/package-test-racknova-f1-9-3-recovery.yml
+      - .github/workflows/package-test-racknova-f1-9-4-owner-reset.yml
       - native/windows/RackNovaRecovery.iss
       - native/windows/configure_install_recovery.ps1
       - native/windows/configure_install.ps1
