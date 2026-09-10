@@ -18,7 +18,7 @@ permissions:
 jobs:
   package:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 50
     env:
       HOTFIX_ARTIFACT_ID: "10081223979"
       PG_URL: "https://get.enterprisedb.com/postgresql/postgresql-16.15-1-windows-x64.exe"
@@ -161,6 +161,177 @@ jobs:
           $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToUpperInvariant()
           $hash | Set-Content output/SHA256_SAFE.txt
           Write-Host "SAFE SHA256=$hash"
+
+      - name: Smoke-test SAFE clean install and non-destructive repair
+        working-directory: native/windows
+        shell: pwsh
+        timeout-minutes: 18
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setup = (Resolve-Path "output/RackNova_Setup_SafeRepair_F1_9_2.exe").Path
+          $installDir = Join-Path $env:ProgramFiles "RackNova"
+          $pgRoot = Join-Path $env:ProgramData "RackNova\PostgreSQL"
+          $pgData = Join-Path $pgRoot "data"
+          $pgInstall = Join-Path $installDir "PostgreSQL"
+          $logDir = Join-Path $env:ProgramData "RackNova\Logs"
+
+          function Show-RackNovaDiagnostics([string]$Label, [string]$InnoLog) {
+            Write-Host ""
+            Write-Host "===== DIAGNOSTICO: $Label ====="
+
+            if (Test-Path -LiteralPath $InnoLog) {
+              Write-Host "----- Inno Setup (últimas 40 líneas) -----"
+              Get-Content -LiteralPath $InnoLog -Tail 40 -ErrorAction SilentlyContinue
+            }
+
+            if (Test-Path -LiteralPath $logDir) {
+              Get-ChildItem -LiteralPath $logDir -File -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending |
+                Select-Object -First 5 |
+                ForEach-Object {
+                  Write-Host "----- $($_.Name) (últimas 40 líneas) -----"
+                  Get-Content -LiteralPath $_.FullName -Tail 40 -ErrorAction SilentlyContinue
+                }
+            }
+
+            Write-Host "----- Servicios -----"
+            Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -in @("RackNovaLocal", "RackNovaPostgreSQL16") } |
+              Select-Object Name, State, StartName, PathName |
+              Format-Table -AutoSize |
+              Out-String |
+              Write-Host
+
+            Write-Host "----- Procesos relevantes -----"
+            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+              Where-Object {
+                $_.Name -match "RackNova|postgres|powershell" -or
+                ($_.CommandLine -and $_.CommandLine -match "RackNova|configure_install")
+              } |
+              Select-Object ProcessId, ParentProcessId, Name, CommandLine |
+              Format-Table -Wrap -AutoSize |
+              Out-String |
+              Write-Host
+          }
+
+          function Invoke-Setup([string]$Label) {
+            $innoLog = Join-Path $env:RUNNER_TEMP ("racknova-inno-" + $Label + ".log")
+            Remove-Item -LiteralPath $innoLog -Force -ErrorAction SilentlyContinue
+
+            Write-Host "=== Ejecutando instalador SAFE: $Label ==="
+            $proc = Start-Process `
+              -FilePath $setup `
+              -ArgumentList @(
+                "/VERYSILENT",
+                "/SUPPRESSMSGBOXES",
+                "/NORESTART",
+                "/SP-",
+                ("/LOG=`"" + $innoLog + "`"")
+              ) `
+              -PassThru
+
+            $deadline = (Get-Date).AddMinutes(10)
+            $nextDiag = (Get-Date).AddSeconds(30)
+
+            while ($true) {
+              Start-Sleep -Seconds 5
+              $proc.Refresh()
+
+              if ($proc.HasExited) {
+                break
+              }
+
+              if ((Get-Date) -ge $nextDiag) {
+                Show-RackNovaDiagnostics -Label ($Label + " en ejecución") -InnoLog $innoLog
+                $nextDiag = (Get-Date).AddSeconds(30)
+              }
+
+              if ((Get-Date) -ge $deadline) {
+                Show-RackNovaDiagnostics -Label ($Label + " TIMEOUT") -InnoLog $innoLog
+                & taskkill.exe /PID $proc.Id /T /F | Out-Null
+                throw "El instalador SAFE excedió 10 minutos en '$Label'."
+              }
+            }
+
+            $exitCode = $proc.ExitCode
+            Show-RackNovaDiagnostics -Label ($Label + " terminado código " + $exitCode) -InnoLog $innoLog
+
+            if ($exitCode -ne 0) {
+              throw "RackNova SAFE terminó con código $exitCode en '$Label'."
+            }
+          }
+
+          function Assert-RackNovaHealthy {
+            $pg = Get-CimInstance Win32_Service -Filter "Name='RackNovaPostgreSQL16'"
+            if (-not $pg) { throw "No existe RackNovaPostgreSQL16." }
+            if ($pg.State -ne "Running") {
+              throw "RackNovaPostgreSQL16 no está Running: $($pg.State)"
+            }
+            if ($pg.StartName -ne "LocalSystem") {
+              throw "Cuenta PostgreSQL inesperada: $($pg.StartName)"
+            }
+
+            $local = Get-Service RackNovaLocal -ErrorAction Stop
+            if ($local.Status -ne "Running") {
+              throw "RackNovaLocal no está Running: $($local.Status)"
+            }
+
+            $response = Invoke-WebRequest `
+              -Uri "http://127.0.0.1:8000/racknova-native/health" `
+              -UseBasicParsing `
+              -TimeoutSec 10
+
+            if ($response.StatusCode -ne 200) {
+              throw "Health check HTTP inesperado: $($response.StatusCode)"
+            }
+          }
+
+          function Get-PostgresSystemIdentifier {
+            $tool = Join-Path $pgInstall "bin\pg_controldata.exe"
+            if (-not (Test-Path -LiteralPath $tool)) {
+              throw "Falta pg_controldata.exe para validar preservación del cluster."
+            }
+
+            $output = (& $tool $pgData 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0) {
+              throw "pg_controldata falló: $output"
+            }
+
+            if ($output -notmatch "Database system identifier:\s*(\d+)") {
+              throw "No pude leer Database system identifier."
+            }
+            return $Matches[1]
+          }
+
+          Write-Host "=== PRUEBA 1: instalación limpia SAFE ==="
+          Invoke-Setup -Label "clean"
+          Assert-RackNovaHealthy
+          $systemIdBefore = Get-PostgresSystemIdentifier
+          Write-Host "PostgreSQL system identifier antes de reparación: $systemIdBefore"
+
+          Write-Host "=== PRUEBA 2: reparación con ACL PostgreSQL dañada, sin reemplazar cluster ==="
+          Stop-Service RackNovaLocal -Force -ErrorAction SilentlyContinue
+          Stop-Service RackNovaPostgreSQL16 -Force -ErrorAction Stop
+
+          & icacls.exe $pgRoot /remove:g "*S-1-5-18" /T /C | Out-Null
+          if ($LASTEXITCODE -notin @(0, 1)) {
+            throw "No pude preparar la simulación de ACL dañada. Código $LASTEXITCODE"
+          }
+
+          Invoke-Setup -Label "repair-acl"
+          Assert-RackNovaHealthy
+
+          $systemIdAfter = Get-PostgresSystemIdentifier
+          Write-Host "PostgreSQL system identifier después de reparación: $systemIdAfter"
+
+          if ($systemIdBefore -ne $systemIdAfter) {
+            throw (
+              "La reparación reemplazó el cluster PostgreSQL. " +
+              "Antes=$systemIdBefore Después=$systemIdAfter"
+            )
+          }
+
+          Write-Host "SAFE PASS: instalación limpia + reparación ACL + preservación del mismo cluster PostgreSQL."
 
       - name: Upload F1.9.2 SAFE installer
         uses: actions/upload-artifact@v6
