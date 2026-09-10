@@ -9,6 +9,8 @@ on:
       - native/windows/RackNovaRecovery.iss
       - native/windows/configure_install_recovery.ps1
       - native/windows/configure_install.ps1
+      - native/windows/racknova_ctl.py
+      - native/windows/racknova_service.py
   workflow_dispatch:
 
 permissions:
@@ -75,6 +77,78 @@ jobs:
           if (-not (Test-Path "dist/RackNovaLocalService/RackNovaLocalService.exe")) {
             throw "Falta RackNovaLocalService.exe"
           }
+
+      - name: Build fresh Windows binaries from recovery branch
+        shell: pwsh
+        timeout-minutes: 12
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $baselineDashboard = "dist/RackNovaLocalService/_service_internal/dashboard_dist"
+          if (-not (Test-Path $baselineDashboard)) { throw "El artefacto base no contiene dashboard_dist." }
+          Remove-Item "native/windows/dashboard_dist" -Recurse -Force -ErrorAction SilentlyContinue
+          Copy-Item $baselineDashboard "native/windows/dashboard_dist" -Recurse -Force
+
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller==6.15.0 pywin32 tzdata
+
+          python -m py_compile `
+            main.py `
+            database.py `
+            racknova_runtime.py `
+            racknova_outbox.py `
+            racknova_sync_capture.py `
+            racknova_sync_worker.py `
+            multiempresa_tenant.py `
+            pos_module.py `
+            pos_phase3.py `
+            native/windows/racknova_secrets.py `
+            native/windows/racknova_native_config.py `
+            native/windows/racknova_native_entry.py `
+            native/windows/racknova_service.py `
+            native/windows/racknova_ctl.py
+
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --onedir `
+            --contents-directory _service_internal `
+            --name RackNovaLocalService `
+            --icon native/windows/racknova.ico `
+            --paths . `
+            --paths native/windows `
+            --hidden-import win32timezone `
+            --hidden-import servicemanager `
+            --hidden-import win32serviceutil `
+            --hidden-import win32service `
+            --hidden-import win32event `
+            --collect-all tzdata `
+            --collect-all psycopg2 `
+            --hidden-import passlib.handlers.bcrypt `
+            --collect-all bcrypt `
+            --add-data "native/windows/dashboard_dist;dashboard_dist" `
+            --add-data "001_multiempresa_fase1.sql;." `
+            --add-data "002_multiempresa_fase2_local_first.sql;." `
+            native/windows/racknova_service.py
+          if (-not (Test-Path "dist/RackNovaLocalService/RackNovaLocalService.exe")) { throw "No se reconstruyó RackNovaLocalService.exe" }
+
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --name RackNovaCtl `
+            --icon native/windows/racknova.ico `
+            --paths . `
+            --paths native/windows `
+            --collect-all tzdata `
+            --collect-all psycopg2 `
+            --hidden-import passlib.handlers.bcrypt `
+            --collect-all bcrypt `
+            --add-data "001_multiempresa_fase1.sql;." `
+            --add-data "002_multiempresa_fase2_local_first.sql;." `
+            native/windows/racknova_ctl.py
+          if (-not (Test-Path "dist/RackNovaCtl.exe")) { throw "No se reconstruyó RackNovaCtl.exe" }
 
       - name: Prepare portable PostgreSQL 16.15
         shell: pwsh

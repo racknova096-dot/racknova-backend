@@ -70,6 +70,7 @@ var
   CloudConfigPage: TInputQueryWizardPage;
   ExistingInstall: Boolean;
   InstallerEntryLog: String;
+  RecoveryFailed: Boolean;
 
 function SetEnvironmentVariable(lpName, lpValue: String): Boolean;
 external 'SetEnvironmentVariableW@Kernel32.dll stdcall delayload';
@@ -400,6 +401,7 @@ begin
 
   if ResultCode <> 0 then
   begin
+    RecoveryFailed := True;
     WriteInstallerEntryLog('ERROR: recuperación terminó con código ' + IntToStr(ResultCode) + '.');
     RaiseException(
       'RackNova no pudo completar la recuperación. Código: ' + IntToStr(ResultCode) +
@@ -448,6 +450,7 @@ begin
   WizardForm.StatusLabel.Caption := 'Verificando RackNova Local...';
   if not WaitForRackNovaHealth(InstallDir) then
   begin
+    RecoveryFailed := True;
     WriteInstallerEntryLog('ERROR: health final no respondió.');
     RaiseException(
       'La recuperación terminó, pero RackNova Local no respondió correctamente. ' +
@@ -456,4 +459,12 @@ begin
   end;
 
   WriteInstallerEntryLog('RackNova F1.9.3 verificado correctamente.');
+end;
+
+function GetCustomSetupExitCode(): Integer;
+begin
+  if RecoveryFailed then
+    Result := 5
+  else
+    Result := 0;
 end;

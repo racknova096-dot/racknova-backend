@@ -15,6 +15,22 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+def _configure_stdio() -> None:
+    """Force UTF-8 for frozen Windows executables before backend imports."""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+        try:
+            reconfigure = getattr(stream, "reconfigure", None)
+            if callable(reconfigure):
+                reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+_configure_stdio()
+
 from racknova_native_config import (
     DEFAULT_DB_PORT,
     DEFAULT_EMPRESA_ID,
