@@ -1,0 +1,45 @@
+name: Validate Local Owner Reset
+
+on:
+  push:
+    branches:
+      - feature/local-owner-reset-20260910
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout backend feature
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Validate backend Python syntax
+        run: |
+          python -m py_compile             native/windows/racknova_local_owner_reset.py             native/windows/racknova_native_entry.py
+
+      - name: Checkout dashboard feature
+        uses: actions/checkout@v5
+        with:
+          repository: racknova096-dot/racknova-dashboard
+          ref: feature/local-owner-reset-20260910
+          path: dashboard
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.3"
+
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: bun install --frozen-lockfile
+
+      - name: Build dashboard
+        working-directory: dashboard
+        run: bun run build
