@@ -1,0 +1,40 @@
+name: Publish RackNova F1.9.3 Commercial Installer
+
+on:
+  push:
+    branches:
+      - installer-recovery-f1-9-3
+    paths:
+      - ".github/workflows/publish-racknova-f1-9-3-commercial.yml"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download tested installer artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-input
+          gh run download 34520642868             --repo "${{ github.repository }}"             --name "RackNova-F1-9-3-RECOVERY-TESTED"             --dir release-input
+
+      - name: Prepare commercial installer
+        run: |
+          test -f release-input/RackNova_Setup_Recovery_F1_9_3.exe
+          cp release-input/RackNova_Setup_Recovery_F1_9_3.exe RackNova_Setup.exe
+          sha256sum RackNova_Setup.exe | tee RackNova_Setup_SHA256.txt
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: racknova-local-f1.9.3-commercial
+        run: |
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$TAG"               RackNova_Setup.exe RackNova_Setup_SHA256.txt               --repo "${{ github.repository }}"               --clobber
+          else
+            gh release create "$TAG"               RackNova_Setup.exe RackNova_Setup_SHA256.txt               --repo "${{ github.repository }}"               --target installer-recovery-f1-9-3               --title "RackNova Local F1.9.3 - Instalador comercial"               --notes "Instalador Windows x64 probado por GitHub Actions: instalación limpia, reparación conservando PostgreSQL sano y reconstrucción automática de PostgreSQL dañado."
+          fi
