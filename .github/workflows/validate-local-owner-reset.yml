@@ -38,7 +38,7 @@ jobs:
 
       - name: Install dashboard dependencies
         working-directory: dashboard
-        run: bun install --frozen-lockfile
+        run: bun install
 
       - name: Build dashboard
         working-directory: dashboard
