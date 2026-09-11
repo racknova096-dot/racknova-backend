@@ -11,6 +11,8 @@ on:
       - native/windows/configure_install.ps1
       - native/windows/racknova_ctl.py
       - native/windows/racknova_service.py
+      - native/windows/racknova_native_entry.py
+      - native/windows/racknova_owner_reset.py
   workflow_dispatch:
 
 permissions:
