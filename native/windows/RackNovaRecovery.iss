@@ -230,7 +230,6 @@ begin
 
   StopServiceForUpgrade('RackNovaLocal');
   StopServiceForUpgrade('RackNovaPostgreSQL16');
-  Sleep(2000);
 
   PowerShellExe := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
   PgRoot := ExpandConstant('{app}\PostgreSQL\');
@@ -238,12 +237,21 @@ begin
 
   Args :=
     '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' +
+    '$ErrorActionPreference=''SilentlyContinue''; ' +
     '$root=''' + PgRoot + '''; ' +
-    '$procs=@(Get-Process -Name postgres -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($root,[System.StringComparison]::OrdinalIgnoreCase) }); ' +
-    'if($procs.Count -gt 0){$procs | Stop-Process -Force -ErrorAction SilentlyContinue}; ' +
+    '$names=@(''RackNovaLocal'',''RackNovaPostgreSQL16''); ' +
+    'foreach($n in $names){$s=Get-Service -Name $n -ErrorAction SilentlyContinue; if($s -and $s.Status -ne ''Stopped''){Stop-Service -Name $n -Force -ErrorAction SilentlyContinue; try{$s.WaitForStatus(''Stopped'',[TimeSpan]::FromSeconds(30))}catch{}}}; ' +
+    'for($i=0;$i -lt 20;$i++){ ' +
+      '$procs=@(Get-Process -Name postgres -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -and $_.Path.StartsWith($root,[System.StringComparison]::OrdinalIgnoreCase) } catch { $false } }); ' +
+      'if($procs.Count -gt 0){$procs | Stop-Process -Force -ErrorAction SilentlyContinue}; ' +
+      '$running=@($names | ForEach-Object { Get-Service -Name $_ -ErrorAction SilentlyContinue } | Where-Object { $_.Status -ne ''Stopped'' }); ' +
+      'if($procs.Count -eq 0 -and $running.Count -eq 0){break}; ' +
+      'Start-Sleep -Milliseconds 500 ' +
+    '}; ' +
     'Start-Sleep -Milliseconds 1200; ' +
-    '$left=@(Get-Process -Name postgres -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($root,[System.StringComparison]::OrdinalIgnoreCase) }); ' +
-    'if($left.Count -gt 0){exit 32}else{exit 0}"';
+    '$left=@(Get-Process -Name postgres -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -and $_.Path.StartsWith($root,[System.StringComparison]::OrdinalIgnoreCase) } catch { $false } }); ' +
+    '$leftSvc=@($names | ForEach-Object { Get-Service -Name $_ -ErrorAction SilentlyContinue } | Where-Object { $_.Status -ne ''Stopped'' }); ' +
+    'if($left.Count -gt 0 -or $leftSvc.Count -gt 0){exit 32}else{exit 0}"';
 
   if not Exec(
     PowerShellExe,
@@ -261,9 +269,11 @@ begin
 
   if ResultCode <> 0 then
   begin
-    WriteInstallerEntryLog('ERROR: quedaron procesos postgres.exe de RackNova. Código=' + IntToStr(ResultCode));
+    WriteInstallerEntryLog('ERROR: RackNova no liberó PostgreSQL/servicios antes de actualizar. Código=' + IntToStr(ResultCode));
     Result := False;
-  end;
+  end
+  else
+    WriteInstallerEntryLog('Servicios y procesos PostgreSQL liberados correctamente.');
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
