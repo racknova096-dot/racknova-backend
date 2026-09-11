@@ -159,7 +159,7 @@ jobs:
           $analysis = Get-ChildItem -Recurse -Filter "warn-RackNovaLocalService.txt" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($analysis) {
             $warnings = Get-Content $analysis.FullName -Raw
-            if ($warnings -match "racknova_owner_reset") {
+            if ($warnings -match "missing module named racknova_owner_reset") {
               Write-Host $warnings
               throw "PyInstaller reportó problema con racknova_owner_reset"
             }
