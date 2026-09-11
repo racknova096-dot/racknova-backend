@@ -13,6 +13,7 @@ from racknova_dashboard_updater import (
     start_dashboard_update_worker,
 )
 from racknova_native_config import apply_native_environment
+from racknova_owner_reset import register_owner_reset_routes
 
 
 def resource_path(name: str) -> Path:
@@ -22,10 +23,19 @@ def resource_path(name: str) -> Path:
 
 
 def get_app() -> Any:
-    config, _ = apply_native_environment()
+    config, secrets = apply_native_environment()
 
     # Importar después de fijar DATABASE_URL y RACKNOVA_MODE.
-    from main import app
+    from main import app, get_current_user, get_session, verify_password
+
+    register_owner_reset_routes(
+        app=app,
+        get_session=get_session,
+        get_current_user=get_current_user,
+        verify_password=verify_password,
+        config=config,
+        secrets=secrets,
+    )
 
     embedded_dashboard = resource_path("dashboard_dist")
 
