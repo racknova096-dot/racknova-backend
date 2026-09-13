@@ -94,6 +94,39 @@ def normalizar_texto(value: Optional[str]) -> str:
     return (value or "").strip()
 
 
+UNIDADES_MANEJO_VALIDAS = {"pieza", "bulto", "caja", "paquete", "kg", "litro"}
+
+
+def normalizar_unidad_manejo(value: Optional[str]) -> str:
+    unidad = (value or "pieza").strip().lower()
+    aliases = {
+        "piezas": "pieza",
+        "pza": "pieza",
+        "pzas": "pieza",
+        "bultos": "bulto",
+        "cajas": "caja",
+        "paquetes": "paquete",
+        "paq": "paquete",
+        "ristra": "paquete",
+        "ristras": "paquete",
+        "kilo": "kg",
+        "kilos": "kg",
+        "kilogramo": "kg",
+        "kilogramos": "kg",
+        "l": "litro",
+        "lt": "litro",
+        "lts": "litro",
+        "litros": "litro",
+    }
+    unidad = aliases.get(unidad, unidad)
+    if unidad not in UNIDADES_MANEJO_VALIDAS:
+        raise HTTPException(
+            status_code=400,
+            detail="Unidad de manejo inválida. Usa pieza, bulto, caja, paquete, kg o litro.",
+        )
+    return unidad
+
+
 def normalizar_stock_minimo(stock_minimo: Optional[int]) -> int:
     if stock_minimo is not None and stock_minimo > 0:
         return stock_minimo
@@ -3216,6 +3249,7 @@ def crear_producto(
         producto.sku = normalizar_texto(producto.sku)
         producto.nombre = normalizar_texto(producto.nombre)
         producto.descripcion = normalizar_texto(producto.descripcion) or None
+        producto.unidad_manejo = normalizar_unidad_manejo(producto.unidad_manejo)
         producto.codigo_barras = normalizar_texto(producto.codigo_barras) or None
         producto.ubicacion_codigo = normalizar_texto(producto.ubicacion_codigo) or None
 
@@ -3263,6 +3297,10 @@ def crear_producto(
                 descripcion=producto.descripcion,
             )
 
+        catalogo.unidad_manejo = producto.unidad_manejo
+        catalogo.ultima_actualizacion = mexico_now()
+        session.add(catalogo)
+
         producto_existente = buscar_producto_por_sku_o_nombre(
             session,
             producto.sku,
@@ -3286,6 +3324,7 @@ def crear_producto(
             producto_existente.cantidad = cantidad_anterior + cantidad_nueva
             producto_existente.costo_proveedor = nuevo_costo_promedio
             producto_existente.precio_venta_sugerido = producto.precio_venta_sugerido
+            producto_existente.unidad_manejo = producto.unidad_manejo
 
             producto_existente.stock_minimo = producto.stock_minimo
             producto_existente.stock_alto = producto.stock_alto
@@ -3439,6 +3478,13 @@ def update_producto(
             db_producto.descripcion = catalogo.descripcion
 
         db_producto.cantidad = updated.cantidad
+        db_producto.unidad_manejo = normalizar_unidad_manejo(
+            updated.unidad_manejo or db_producto.unidad_manejo
+        )
+        if catalogo:
+            catalogo.unidad_manejo = db_producto.unidad_manejo
+            catalogo.ultima_actualizacion = mexico_now()
+            session.add(catalogo)
         db_producto.costo_proveedor = updated.costo_proveedor or 0
         db_producto.precio_venta_sugerido = updated.precio_venta_sugerido or 0
         db_producto.codigo_barras = (
