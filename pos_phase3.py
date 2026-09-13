@@ -409,6 +409,8 @@ _PRODUCT_UNIT_ALIASES = {
     "paquete": "paquete",
     "paquetes": "paquete",
     "paq": "paquete",
+    "ristra": "paquete",
+    "ristras": "paquete",
     "kg": "kg",
     "kilo": "kg",
     "kilos": "kg",
@@ -438,8 +440,9 @@ def _serialize_product_unit(
     row: Optional[POSProductoConfiguracion],
     *,
     product_exists: bool,
+    fallback_unit: Any = "pieza",
 ) -> Dict[str, Any]:
-    key, definition = _product_unit(row.unidad_venta if row else "pieza")
+    key, definition = _product_unit(row.unidad_venta if row else fallback_unit)
     factor = float(row.factor_inventario if row else definition["factor_inventario"])
     return {
         "sku": sku,
@@ -3028,10 +3031,26 @@ def registrar_modulo_pos_fase3(
             select(Producto).where(Producto.sku == clean_sku)
         ).first()
         row = _product_config(session, clean_sku)
+        fallback_unit = getattr(product, "unidad_manejo", None) if product is not None else None
+        if row is None and not fallback_unit:
+            empresa_id = rn_tenant.current_empresa_id(session)
+            fallback_unit = session.connection().execute(
+                sa_text(
+                    """
+                    SELECT unidad_manejo
+                    FROM producto_catalogo
+                    WHERE empresa_id = CAST(:empresa AS UUID)
+                      AND sku = :sku
+                    LIMIT 1
+                    """
+                ),
+                {"empresa": empresa_id, "sku": clean_sku},
+            ).scalar_one_or_none()
         return _serialize_product_unit(
             clean_sku,
             row,
             product_exists=product is not None,
+            fallback_unit=fallback_unit or "pieza",
         )
 
     @app.put("/pos/v3/productos/unidad/{sku}")
@@ -3085,6 +3104,38 @@ def registrar_modulo_pos_fase3(
         row.fecha_actualizacion = now
         row.actualizado_por = _name(current_user)
         session.add(row)
+
+        # Mantener la unidad comercial como una sola fuente coherente entre
+        # inventario, catálogo histórico, POS y reglas de mayoreo.
+        if product is not None:
+            product.unidad_manejo = unit_key
+            session.add(product)
+
+        empresa_id = rn_tenant.current_empresa_id(session)
+        session.connection().execute(
+            sa_text(
+                """
+                UPDATE producto_catalogo
+                SET unidad_manejo = :unidad,
+                    ultima_actualizacion = CURRENT_TIMESTAMP
+                WHERE empresa_id = CAST(:empresa AS UUID)
+                  AND sku = :sku
+                """
+            ),
+            {"unidad": unit_key, "empresa": empresa_id, "sku": clean_sku},
+        )
+        session.connection().execute(
+            sa_text(
+                """
+                UPDATE pos_mayoreo_menudeo
+                SET unidad = :unidad,
+                    actualizado_en = CURRENT_TIMESTAMP
+                WHERE empresa_id = CAST(:empresa AS UUID)
+                  AND sku = :sku
+                """
+            ),
+            {"unidad": unit_key, "empresa": empresa_id, "sku": clean_sku},
+        )
 
         _audit(
             session,
