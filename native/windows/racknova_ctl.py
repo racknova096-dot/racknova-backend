@@ -457,6 +457,7 @@ def init_schema() -> None:
     migration_names = (
         "001_multiempresa_fase1.sql",
         "002_multiempresa_fase2_local_first.sql",
+        "003_unidad_manejo.sql",
     )
 
     raw = engine.raw_connection()
