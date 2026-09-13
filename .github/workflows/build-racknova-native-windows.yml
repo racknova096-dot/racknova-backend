@@ -46,7 +46,8 @@ jobs:
             "racknova_sync_worker.py",
             "multiempresa_tenant.py",
             "001_multiempresa_fase1.sql",
-            "002_multiempresa_fase2_local_first.sql"
+            "002_multiempresa_fase2_local_first.sql",
+            "003_unidad_manejo.sql"
           )
 
           foreach ($file in $required) {
@@ -425,6 +426,7 @@ jobs:
             --add-data "native/windows/dashboard_dist;dashboard_dist" `
             --add-data "001_multiempresa_fase1.sql;." `
             --add-data "002_multiempresa_fase2_local_first.sql;." `
+            --add-data "003_unidad_manejo.sql;." `
             native/windows/racknova_service.py
 
           if (-not (Test-Path "dist/RackNovaLocalService/RackNovaLocalService.exe")) {
