@@ -353,6 +353,30 @@ _PRODUCT_UNITS: Dict[str, Dict[str, Any]] = {
         "factor_inventario": 1.0,
         "unidad_interna": "pieza",
     },
+    "bulto": {
+        "unidad_venta": "bulto",
+        "etiqueta": "Bulto",
+        "simbolo": "bulto",
+        "permite_fraccion": False,
+        "factor_inventario": 1.0,
+        "unidad_interna": "bulto",
+    },
+    "caja": {
+        "unidad_venta": "caja",
+        "etiqueta": "Caja",
+        "simbolo": "caja",
+        "permite_fraccion": False,
+        "factor_inventario": 1.0,
+        "unidad_interna": "caja",
+    },
+    "paquete": {
+        "unidad_venta": "paquete",
+        "etiqueta": "Paquete",
+        "simbolo": "paq",
+        "permite_fraccion": False,
+        "factor_inventario": 1.0,
+        "unidad_interna": "paquete",
+    },
     "kg": {
         "unidad_venta": "kg",
         "etiqueta": "Kilogramo",
@@ -378,6 +402,13 @@ _PRODUCT_UNIT_ALIASES = {
     "pzas": "pieza",
     "unidad": "pieza",
     "unidades": "pieza",
+    "bulto": "bulto",
+    "bultos": "bulto",
+    "caja": "caja",
+    "cajas": "caja",
+    "paquete": "paquete",
+    "paquetes": "paquete",
+    "paq": "paquete",
     "kg": "kg",
     "kilo": "kg",
     "kilos": "kg",
@@ -397,7 +428,7 @@ def _product_unit(value: Any) -> Tuple[str, Dict[str, Any]]:
     if not key:
         raise HTTPException(
             status_code=400,
-            detail="Unidad inválida. Usa pieza, kg o litro.",
+            detail="Unidad inválida. Usa pieza, bulto, caja, paquete, kg o litro.",
         )
     return key, _PRODUCT_UNITS[key]
 
