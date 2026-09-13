@@ -3246,6 +3246,13 @@ def crear_producto(
     rn_empresa_id: str | None = Header(default=None, alias="X-Empresa-ID"),):
     _rn_bind_empresa(session, current_user, rn_empresa_id, allowed_roles={'admin', 'operator', 'owner'})  # RACKNOVA_MULTIEMPRESA_FASE2_LOCAL_FIRST
     try:
+        producto_fields_set = set(
+            getattr(producto, "model_fields_set", None)
+            or getattr(producto, "__fields_set__", None)
+            or set()
+        )
+        unidad_manejo_enviada = "unidad_manejo" in producto_fields_set
+
         producto.sku = normalizar_texto(producto.sku)
         producto.nombre = normalizar_texto(producto.nombre)
         producto.descripcion = normalizar_texto(producto.descripcion) or None
@@ -3297,9 +3304,10 @@ def crear_producto(
                 descripcion=producto.descripcion,
             )
 
-        catalogo.unidad_manejo = producto.unidad_manejo
-        catalogo.ultima_actualizacion = mexico_now()
-        session.add(catalogo)
+        if unidad_manejo_enviada or not getattr(catalogo, "unidad_manejo", None):
+            catalogo.unidad_manejo = producto.unidad_manejo
+            catalogo.ultima_actualizacion = mexico_now()
+            session.add(catalogo)
 
         producto_existente = buscar_producto_por_sku_o_nombre(
             session,
@@ -3311,6 +3319,8 @@ def crear_producto(
         # RESTOCK
         # ======================================================
         if producto_existente:
+            if not unidad_manejo_enviada:
+                producto.unidad_manejo = producto_existente.unidad_manejo
             cantidad_anterior = producto_existente.cantidad or 0
             cantidad_nueva = producto.cantidad or 0
 
@@ -3478,13 +3488,19 @@ def update_producto(
             db_producto.descripcion = catalogo.descripcion
 
         db_producto.cantidad = updated.cantidad
-        db_producto.unidad_manejo = normalizar_unidad_manejo(
-            updated.unidad_manejo or db_producto.unidad_manejo
+        updated_fields_set = set(
+            getattr(updated, "model_fields_set", None)
+            or getattr(updated, "__fields_set__", None)
+            or set()
         )
-        if catalogo:
-            catalogo.unidad_manejo = db_producto.unidad_manejo
-            catalogo.ultima_actualizacion = mexico_now()
-            session.add(catalogo)
+        if "unidad_manejo" in updated_fields_set:
+            db_producto.unidad_manejo = normalizar_unidad_manejo(
+                updated.unidad_manejo or db_producto.unidad_manejo
+            )
+            if catalogo:
+                catalogo.unidad_manejo = db_producto.unidad_manejo
+                catalogo.ultima_actualizacion = mexico_now()
+                session.add(catalogo)
         db_producto.costo_proveedor = updated.costo_proveedor or 0
         db_producto.precio_venta_sugerido = updated.precio_venta_sugerido or 0
         db_producto.codigo_barras = (
