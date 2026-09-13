@@ -777,6 +777,91 @@ def _credit_by_sale(session: Session, sale_id: int) -> Optional[POSCredito]:
     ).first()
 
 
+def _return_status(total: float, returned_amount: float, return_count: int) -> str:
+    if return_count <= 0 or returned_amount <= 0:
+        return "NINGUNA"
+    if returned_amount >= max(float(total or 0) - 0.01, 0):
+        return "TOTAL"
+    return "PARCIAL"
+
+
+def _serialize_returns_for_sale(
+    session: Session,
+    sale_id: int,
+) -> List[Dict[str, Any]]:
+    rows = session.exec(
+        select(POSDevolucion)
+        .where(POSDevolucion.id_venta == sale_id)
+        .order_by(POSDevolucion.fecha.desc())
+    ).all()
+
+    result: List[Dict[str, Any]] = []
+    for row in rows:
+        details = session.exec(
+            select(POSDevolucionDetalle).where(
+                POSDevolucionDetalle.id_devolucion == row.id_devolucion
+            )
+        ).all()
+        extra = session.exec(
+            select(POSDevolucionExtra).where(
+                POSDevolucionExtra.id_devolucion == row.id_devolucion
+            )
+        ).first()
+
+        serialized_items: List[Dict[str, Any]] = []
+        for item in details:
+            detail_extra = _detail_extra(
+                session,
+                int(item.id_detalle_venta or 0),
+            )
+            factor = float(
+                detail_extra.factor_inventario if detail_extra else 1
+            ) or 1
+            serialized_items.append(
+                {
+                    "id_detalle_devolucion": item.id_detalle_devolucion,
+                    "id_detalle_venta": item.id_detalle_venta,
+                    "id_producto": item.id_producto,
+                    "sku": item.sku,
+                    "nombre": item.nombre,
+                    "cantidad": _qty(float(item.cantidad or 0) / factor),
+                    "cantidad_inventario": int(item.cantidad or 0),
+                    "unidad_venta": (
+                        detail_extra.unidad_venta
+                        if detail_extra
+                        else "pieza"
+                    ),
+                    "factor_inventario": factor,
+                    "precio_unitario": _money(item.precio_unitario),
+                    "subtotal": _money(item.subtotal),
+                }
+            )
+
+        result.append(
+            {
+                "id_devolucion": row.id_devolucion,
+                "folio": row.folio,
+                "id_venta": row.id_venta,
+                "id_sesion": row.id_sesion,
+                "usuario": row.usuario,
+                "motivo": row.motivo,
+                "metodo_reembolso": row.metodo_reembolso,
+                "monto": _money(row.monto),
+                "ajuste_credito": _money(
+                    extra.ajuste_credito if extra else 0
+                ),
+                "reembolso_real": _money(
+                    extra.reembolso_real if extra else row.monto
+                ),
+                "estado": row.estado,
+                "fecha": row.fecha,
+                "items": serialized_items,
+            }
+        )
+
+    return result
+
+
 def _serialize_clients_bulk(
     rows: List[POSCliente],
     session: Session,
@@ -873,8 +958,18 @@ def _serialize_client(row: POSCliente, session: Optional[Session] = None) -> Dic
 
 
 def _serialize_sale(session: Session, sale: VentaPOS, detail: bool = True) -> Dict[str, Any]:
-    extra = _sale_extra(session, int(sale.id_venta or 0))
-    control = _sale_control(session, int(sale.id_venta or 0))
+    sale_id = int(sale.id_venta or 0)
+    extra = _sale_extra(session, sale_id)
+    control = _sale_control(session, sale_id)
+    returns = _serialize_returns_for_sale(session, sale_id) if sale_id else []
+    active_returns = [
+        row for row in returns
+        if str(row.get("estado") or "").upper() != "CANCELADA"
+    ]
+    returned_amount = _money(
+        sum(float(row.get("monto") or 0) for row in active_returns)
+    )
+    return_count = len(active_returns)
     data: Dict[str, Any] = {
         "id_venta": sale.id_venta,
         "folio": sale.folio,
@@ -897,6 +992,14 @@ def _serialize_sale(session: Session, sale: VentaPOS, detail: bool = True) -> Di
         "id_sesion": control.id_sesion if control else None,
         "motivo_anulacion": control.motivo_anulacion if control else None,
         "fecha_anulacion": control.fecha_anulacion if control else None,
+        "numero_devoluciones": return_count,
+        "monto_devuelto": returned_amount,
+        "total_neto": _money(max(float(sale.total or 0) - returned_amount, 0)),
+        "estado_devolucion": _return_status(
+            float(sale.total or 0),
+            returned_amount,
+            return_count,
+        ),
     }
     if not detail or sale.id_venta is None:
         return data
@@ -959,6 +1062,7 @@ def _serialize_sale(session: Session, sale: VentaPOS, detail: bool = True) -> Di
         }
         for row in payments
     ]
+    data["devoluciones"] = returns
     return data
 
 
@@ -3885,6 +3989,7 @@ def registrar_modulo_pos_fase3(
         ]
         extras_by_sale: Dict[int, POSVentaExtra] = {}
         controls_by_sale: Dict[int, POSVentaControl] = {}
+        returns_by_sale: Dict[int, List[POSDevolucion]] = defaultdict(list)
 
         if sale_ids:
             extras = session.exec(
@@ -3901,11 +4006,26 @@ def registrar_modulo_pos_fase3(
             ).all()
             controls_by_sale = {row.id_venta: row for row in controls}
 
+            return_rows = session.exec(
+                select(POSDevolucion).where(
+                    POSDevolucion.id_venta.in_(sale_ids)
+                )
+            ).all()
+            for return_row in return_rows:
+                if str(return_row.estado or "").upper() == "CANCELADA":
+                    continue
+                returns_by_sale[int(return_row.id_venta)].append(return_row)
+
         result = []
         for sale in rows:
             sale_id = int(sale.id_venta or 0)
             extra = extras_by_sale.get(sale_id)
             control = controls_by_sale.get(sale_id)
+            sale_returns = returns_by_sale.get(sale_id, [])
+            returned_amount = _money(
+                sum(float(row.monto or 0) for row in sale_returns)
+            )
+            return_count = len(sale_returns)
             result.append(
                 {
                     "id_venta": sale.id_venta,
@@ -3938,6 +4058,16 @@ def registrar_modulo_pos_fase3(
                     ),
                     "fecha_anulacion": (
                         control.fecha_anulacion if control else None
+                    ),
+                    "numero_devoluciones": return_count,
+                    "monto_devuelto": returned_amount,
+                    "total_neto": _money(
+                        max(float(sale.total or 0) - returned_amount, 0)
+                    ),
+                    "estado_devolucion": _return_status(
+                        float(sale.total or 0),
+                        returned_amount,
+                        return_count,
                     ),
                 }
             )
