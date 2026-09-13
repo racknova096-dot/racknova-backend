@@ -38,6 +38,7 @@ COMPOSE_FILE = STATE_DIR / "docker-compose.racknova-local.yml"
 BOOT_LOG = STATE_DIR / "bootstrap_backend.log"
 SQL_001 = Path(__file__).with_name("001_multiempresa_fase1.sql")
 SQL_002 = Path(__file__).with_name("002_multiempresa_fase2_local_first.sql")
+SQL_003 = Path(__file__).with_name("003_unidad_manejo.sql")
 
 DEFAULT_EMPRESA = "11111111-1111-4111-8111-111111111111"
 DEFAULT_DB_PORT = 54329
@@ -1017,6 +1018,7 @@ def provision(args: argparse.Namespace) -> None:
         ROOT / "racknova_local_first.py",
         SQL_001,
         SQL_002,
+        SQL_003,
     ]
     for path in required:
         if not path.exists():
@@ -1073,6 +1075,8 @@ def provision(args: argparse.Namespace) -> None:
     psql(SQL_001.read_text(encoding="utf-8"))
     info("Aplicando migración Local-First Fase 2...")
     psql(SQL_002.read_text(encoding="utf-8"))
+    info("Aplicando migración de unidad de manejo...")
+    psql(SQL_003.read_text(encoding="utf-8"))
 
     # Confirmar que el backend sigue arrancando con el esquema final.
     initialize_backend_schema(config)
