@@ -173,6 +173,7 @@ class Producto(SQLModel, table=True):
     codigo_barras: Optional[str] = Field(default=None, index=True)
     ubicacion_codigo: Optional[str] = Field(default=None, index=True)
     cantidad: int = 0
+    unidad_manejo: str = "pieza"
 
     rack: str
     nivel: str
@@ -203,6 +204,7 @@ class ProductoCatalogo(SQLModel, table=True):
     sku: str = Field(index=True)
     nombre: str = Field(index=True)
     descripcion: Optional[str] = None
+    unidad_manejo: str = "pieza"
 
     fecha_creacion: datetime = Field(default_factory=mexico_now)
     ultima_actualizacion: datetime = Field(default_factory=mexico_now)
