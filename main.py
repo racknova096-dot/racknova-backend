@@ -3256,6 +3256,24 @@ def crear_producto(
         producto.sku = normalizar_texto(producto.sku)
         producto.nombre = normalizar_texto(producto.nombre)
         producto.descripcion = normalizar_texto(producto.descripcion) or None
+
+        if not unidad_manejo_enviada and producto.sku:
+            empresa_id = rn_tenant.current_empresa_id(session)
+            unidad_configurada = session.connection().execute(
+                text(
+                    """
+                    SELECT unidad_venta
+                    FROM pos_producto_configuracion
+                    WHERE empresa_id = CAST(:empresa AS UUID)
+                      AND sku = :sku
+                    LIMIT 1
+                    """
+                ),
+                {"empresa": empresa_id, "sku": producto.sku},
+            ).scalar_one_or_none()
+            if unidad_configurada:
+                producto.unidad_manejo = str(unidad_configurada)
+
         producto.unidad_manejo = normalizar_unidad_manejo(producto.unidad_manejo)
         producto.codigo_barras = normalizar_texto(producto.codigo_barras) or None
         producto.ubicacion_codigo = normalizar_texto(producto.ubicacion_codigo) or None
