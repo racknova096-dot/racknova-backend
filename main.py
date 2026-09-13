@@ -3273,6 +3273,7 @@ def crear_producto(
             ).scalar_one_or_none()
             if unidad_configurada:
                 producto.unidad_manejo = str(unidad_configurada)
+                unidad_manejo_enviada = True
 
         producto.unidad_manejo = normalizar_unidad_manejo(producto.unidad_manejo)
         producto.codigo_barras = normalizar_texto(producto.codigo_barras) or None
