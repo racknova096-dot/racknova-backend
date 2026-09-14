@@ -50,9 +50,9 @@ from racknova_sync_capture import (
 
 try:
     from database import engine, get_session
-    print("✅ Database module imported successfully")
+    print("[OK] Database module imported successfully")
 except Exception as e:
-    print(f"❌ ERROR importing database: {e}")
+    print(f"[ERROR] importing database: {e}")
     sys.exit(1)
 
 
