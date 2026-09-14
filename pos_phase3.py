@@ -3965,7 +3965,7 @@ def registrar_modulo_pos_fase3(
             raise
         except Exception as exc:
             session.rollback()
-            print(f"❌ Error venta POS Fase 3: {exc}")
+            print(f"[ERROR] Error venta POS Fase 3: {exc}")
             raise HTTPException(status_code=500, detail=f"No se pudo registrar la venta: {exc}") from exc
 
     @app.get("/pos/v3/ventas")
