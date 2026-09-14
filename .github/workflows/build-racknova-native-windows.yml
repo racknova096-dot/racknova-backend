@@ -606,8 +606,8 @@ jobs:
             if ($pg.State -ne "Running") {
               throw "RackNovaPostgreSQL16 no está Running: $($pg.State)"
             }
-            if ($pg.StartName -ne "LocalSystem") {
-              throw "PostgreSQL usa una cuenta inesperada. Esperado: LocalSystem Actual: $($pg.StartName)"
+            if ($pg.StartName -notmatch "NetworkService") {
+              throw "PostgreSQL usa una cuenta inesperada. Esperado: NetworkService Actual: $($pg.StartName)"
             }
 
             $local = Get-Service RackNovaLocal -ErrorAction Stop
@@ -629,7 +629,7 @@ jobs:
           Invoke-Setup -Label "clean"
           Assert-RackNovaHealthy
 
-          Write-Host "=== Smoke test: reparar LocalSystem con ACL dañada ==="
+          Write-Host "=== Smoke test: reparar instalación legacy LocalSystem ==="
           Stop-Service RackNovaLocal -Force -ErrorAction SilentlyContinue
           Stop-Service RackNovaPostgreSQL16 -Force -ErrorAction Stop
 
@@ -638,8 +638,9 @@ jobs:
             throw "No pude preparar la simulación LocalSystem."
           }
 
-          & icacls.exe $pgRoot /remove:g "*S-1-5-18" /T /C | Out-Null
-          & icacls.exe $pgInstall /remove:g "*S-1-5-18" /T /C | Out-Null
+          # Simula el estado legacy: servicio LocalSystem y sin ACL de NetworkService.
+          & icacls.exe $pgRoot /remove:g "*S-1-5-20" /T /C | Out-Null
+          & icacls.exe $pgInstall /remove:g "*S-1-5-20" /T /C | Out-Null
 
           Invoke-Setup -Label "repair-acl"
           Assert-RackNovaHealthy
