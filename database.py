@@ -9,9 +9,9 @@ import os
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
-    raise Exception("❌ ERROR: No se cargó DATABASE_URL en Render")
+    raise Exception("ERROR: No se cargó DATABASE_URL en Render")
 
-print("✅ DATABASE_URL detectada")
+print("[OK] DATABASE_URL detectada")
 
 
 def normalize_database_url(url: str) -> str:
@@ -24,20 +24,20 @@ def normalize_database_url(url: str) -> str:
 
     if url.startswith("mysql://"):
         url = url.replace("mysql://", "mysql+pymysql://", 1)
-        print("✅ URL convertida a mysql+pymysql")
+        print("[OK] URL convertida a mysql+pymysql")
 
     elif url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql+psycopg2://", 1)
-        print("✅ URL convertida a postgresql+psycopg2")
+        print("[OK] URL convertida a postgresql+psycopg2")
 
     elif url.startswith("postgresql://"):
         url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
-        print("✅ URL convertida a postgresql+psycopg2")
+        print("[OK] URL convertida a postgresql+psycopg2")
 
     if url.startswith("postgresql+psycopg2://") and "sslmode=" not in url:
         separator = "&" if "?" in url else "?"
         url = f"{url}{separator}sslmode=require"
-        print("✅ SSL activado para PostgreSQL/Supabase")
+        print("[OK] SSL activado para PostgreSQL/Supabase")
 
     return url
 
@@ -62,10 +62,10 @@ try:
         connect_args=CONNECT_ARGS,
     )
 
-    print("✅ Engine creado exitosamente")
+    print("[OK] Engine creado exitosamente")
 
 except Exception as e:
-    print(f"❌ ERROR al crear engine: {e}")
+    print(f"[ERROR] al crear engine: {e}")
     raise
 
 # racknova_sync_worker ya fue importado por main.py antes de database.py.
