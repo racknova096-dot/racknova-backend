@@ -134,18 +134,21 @@ begin
     PreviousPageId := MigrationPage.ID;
   end;
 
-  CloudConfigPage := CreateInputQueryPage(
-    PreviousPageId,
-    'Conexión con RackNova Cloud',
-    'Activa este equipo durante la instalación',
-    'Introduce los datos de RackNova Cloud. El Sync Secret se oculta, no se escribe en el log del instalador y se guarda después protegido por Windows DPAPI.'
-  );
-  CloudConfigPage.Add('URL de RackNova Cloud:', False);
-  CloudConfigPage.Values[0] := 'https://racknova-backend-1.onrender.com';
-  CloudConfigPage.Add('ID de empresa:', False);
-  CloudConfigPage.Values[1] := '11111111-1111-4111-8111-111111111111';
-  CloudConfigPage.Add('Sync Secret de RackNova:', True);
-  CloudConfigPage.Values[2] := '';
+  if not WizardSilent then
+  begin
+    CloudConfigPage := CreateInputQueryPage(
+      PreviousPageId,
+      'Conexión con RackNova Cloud',
+      'Activa este equipo durante la instalación',
+      'Introduce los datos de RackNova Cloud. El Sync Secret se oculta, no se escribe en el log del instalador y se guarda después protegido por Windows DPAPI.'
+    );
+    CloudConfigPage.Add('URL de RackNova Cloud:', False);
+    CloudConfigPage.Values[0] := 'https://racknova-backend-1.onrender.com';
+    CloudConfigPage.Add('ID de empresa:', False);
+    CloudConfigPage.Values[1] := '11111111-1111-4111-8111-111111111111';
+    CloudConfigPage.Add('Sync Secret de RackNova:', True);
+    CloudConfigPage.Values[2] := '';
+  end;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
