@@ -1285,7 +1285,7 @@ def registrar_modulo_pos(
             raise
         except Exception as error:
             session.rollback()
-            print(f"❌ Error creando venta POS: {error}")
+            print(f"[ERROR] Error creando venta POS: {error}")
             raise HTTPException(
                 status_code=500,
                 detail=f"No se pudo registrar la venta: {str(error)}",
