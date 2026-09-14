@@ -156,6 +156,12 @@ var
 begin
   Result := True;
 
+  { En /VERYSILENT no existe interacción para capturar Sync Secret.
+    El smoke test valida únicamente el runtime local; la activación Cloud
+    permanece exclusiva del instalador interactivo normal. }
+  if WizardSilent then
+    Exit;
+
   if CurPageID = CloudConfigPage.ID then
   begin
     CloudUrl := Trim(CloudConfigPage.Values[0]);
