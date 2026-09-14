@@ -74,9 +74,6 @@ var
   MigrationPage: TInputOptionWizardPage;
   ExistingInstall: Boolean;
 
-function SetEnvironmentVariable(lpName, lpValue: String): Boolean;
-external 'SetEnvironmentVariableW@Kernel32.dll stdcall delayload';
-
 function DetectExistingInstall(): Boolean;
 begin
   Result :=
@@ -354,11 +351,46 @@ begin
     RaiseException('No fue posible iniciar un componente interno de instalación.');
 end;
 
+procedure PrepareProtectedSecretFile(
+  SyncSecret: String;
+  var SecretFile: String
+);
+var
+  ResultCode: Integer;
+  IcaclsArgs: String;
+begin
+  SecretFile := ExpandConstant('{tmp}\racknova-cloud-secret.txt');
+
+  if FileExists(SecretFile) then
+    DeleteFile(SecretFile);
+
+  if not SaveStringToFile(SecretFile, SyncSecret, False) then
+    RaiseException('No pude preparar la credencial temporal de RackNova Cloud.');
+
+  IcaclsArgs :=
+    '"' + SecretFile + '" /inheritance:r /grant:r ' +
+    '"*S-1-5-18:F" "*S-1-5-32-544:F"';
+
+  if not Exec(
+    ExpandConstant('{sys}\icacls.exe'),
+    IcaclsArgs,
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  ) then
+    RaiseException('No pude proteger la credencial temporal de RackNova Cloud.');
+
+  if ResultCode <> 0 then
+    RaiseException('Windows no pudo proteger la credencial temporal de RackNova Cloud.');
+end;
+
 procedure RunCloudActivation(
   InstallDir: String;
   CloudUrl: String;
   EmpresaId: String;
   AllowTenantBootstrap: Boolean;
+  SecretFile: String;
   var ResultCode: Integer
 );
 var
@@ -374,7 +406,8 @@ begin
     '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath +
     '" -Mode Activate -InstallDir "' + InstallDir +
     '" -CloudUrl "' + CloudUrl +
-    '" -EmpresaId "' + EmpresaId + '"';
+    '" -EmpresaId "' + EmpresaId +
+    '" -SecretFile "' + SecretFile + '"';
 
   if AllowTenantBootstrap then
     Args := Args + ' -AllowTenantBootstrap';
@@ -445,6 +478,7 @@ var
   CloudUrl: String;
   EmpresaId: String;
   SyncSecret: String;
+  SecretFile: String;
   ResetRequested: Boolean;
 begin
   if CurStep = ssPostInstall then
@@ -487,8 +521,7 @@ begin
       SyncSecret := Trim(CloudConfigPage.Values[2]);
 
       WizardForm.StatusLabel.Caption := 'Activando RackNova Cloud...';
-      if not SetEnvironmentVariable('RACKNOVA_INSTALL_SYNC_SECRET', SyncSecret) then
-        RaiseException('No pude preparar de forma segura la credencial Cloud.');
+      PrepareProtectedSecretFile(SyncSecret, SecretFile);
 
       try
         RunCloudActivation(
@@ -496,10 +529,12 @@ begin
           CloudUrl,
           EmpresaId,
           ShouldBootstrapCloud(),
+          SecretFile,
           ResultCode
         );
       finally
-        SetEnvironmentVariable('RACKNOVA_INSTALL_SYNC_SECRET', '');
+        if FileExists(SecretFile) then
+          DeleteFile(SecretFile);
       end;
 
       if ResultCode <> 0 then
