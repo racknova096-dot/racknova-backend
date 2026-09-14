@@ -10,7 +10,8 @@ param(
     [string]$EmpresaId = "",
     [string]$NodeCode = "",
     [string]$NodeName = "",
-    [int]$SyncInterval = 15
+    [int]$SyncInterval = 15,
+    [switch]$AllowTenantBootstrap
 )
 
 $ErrorActionPreference = "Stop"
@@ -334,11 +335,29 @@ if ($Mode -eq "Activate") {
         throw "La empresa configurada actualmente en RackNova Local no es válida."
     }
 
+    $IsActivated = [bool]($Config["activated"])
+    $ExistingCredential = ([string]($Secrets["node_credential"])).Trim()
+    $IsBootstrapPlaceholder = ($CurrentEmpresa -eq $DefaultEmpresaId)
+
     if ($CurrentEmpresa -ne $RequestedEmpresa) {
-        throw (
-            "RackNova Local está inicializado para la empresa $CurrentEmpresa, " +
-            "pero se intentó vincular con $RequestedEmpresa. " +
-            "No cambiaré de tenant sin un bootstrap Cloud seguro."
+        $CanAdoptRequestedEmpresa = (
+            $AllowTenantBootstrap.IsPresent -and
+            (-not $IsActivated) -and
+            $IsBootstrapPlaceholder -and
+            (-not $ExistingCredential)
+        )
+
+        if (-not $CanAdoptRequestedEmpresa) {
+            throw (
+                "RackNova Local está inicializado para la empresa $CurrentEmpresa, " +
+                "pero se intentó vincular con $RequestedEmpresa. " +
+                "No cambiaré de tenant sin un bootstrap Cloud seguro."
+            )
+        }
+
+        Write-CloudLog (
+            "Bootstrap Cloud autorizado: reemplazando empresa provisional " +
+            "$CurrentEmpresa por $RequestedEmpresa después de validar Cloud."
         )
     }
 
@@ -397,10 +416,25 @@ if ($Mode -eq "Activate") {
             -TimeoutSec 30
     }
     catch {
-        throw (
+        $CloudDetail = ""
+        try {
+            if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+                $CloudDetail = ([string]$_.ErrorDetails.Message).Trim()
+            }
+        }
+        catch {
+        }
+
+        $Message = (
             "No pude registrar este RackNova Local en Cloud: " +
             $_.Exception.Message
         )
+        if ($CloudDetail) {
+            $Message += " | Respuesta Cloud: " + $CloudDetail
+        }
+
+        Write-CloudLog ("ERROR activando RackNova Cloud: " + $Message)
+        throw $Message
     }
 
     if ($Remote.ok -ne $true) {
