@@ -22,7 +22,7 @@ function Write-EntryLog([string]$Message) {
     $line | Tee-Object -FilePath $EntryLog -Append | Write-Host
 }
 
-function Grant-LocalSystemDataAccess {
+function Grant-InstallerDataAccess {
     New-Item -ItemType Directory -Force -Path $PgRoot | Out-Null
 
     $AclOutput = (& icacls.exe `
@@ -30,6 +30,7 @@ function Grant-LocalSystemDataAccess {
         /inheritance:e `
         /grant:r `
         "*S-1-5-18:(OI)(CI)F" `
+        "*S-1-5-20:(OI)(CI)F" `
         /T `
         /C 2>&1 | Out-String).Trim()
 
@@ -44,7 +45,7 @@ function Grant-LocalSystemDataAccess {
 
     if ($AclExitCode -ne 0) {
         throw (
-            "No pude dar permisos del cluster PostgreSQL a LocalSystem. " +
+            "No pude preparar permisos del cluster PostgreSQL para el instalador. " +
             "icacls terminó con código $AclExitCode."
         )
     }
@@ -65,24 +66,41 @@ try {
     # de texto: ese mecanismo quedó obsoleto y rompía cuando el script base
     # evolucionaba.
     Write-EntryLog "Preparando permisos del cluster PostgreSQL."
-    Grant-LocalSystemDataAccess
+    Grant-InstallerDataAccess
 
     Write-EntryLog "Ejecutando configure_install.ps1 sin reescrituras dinámicas."
 
-    $Output = & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
-        -NoProfile `
-        -NonInteractive `
-        -ExecutionPolicy Bypass `
-        -File $Original `
-        -InstallDir $InstallDir 2>&1
+    $ChildStamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $ChildStdOut = Join-Path $LogDir ("configure-stdout-" + $ChildStamp + ".log")
+    $ChildStdErr = Join-Path $LogDir ("configure-stderr-" + $ChildStamp + ".log")
+    $PowerShellExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
 
-    $ExitCode = $LASTEXITCODE
+    $Process = Start-Process `
+        -FilePath $PowerShellExe `
+        -ArgumentList @(
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy", "Bypass",
+            "-File", ("\"" + $Original + "\""),
+            "-InstallDir", ("\"" + $InstallDir + "\"")
+        ) `
+        -RedirectStandardOutput $ChildStdOut `
+        -RedirectStandardError $ChildStdErr `
+        -Wait `
+        -PassThru
 
-    foreach ($OutputLine in @($Output)) {
-        if ($null -ne $OutputLine) {
-            $Text = ($OutputLine | Out-String).Trim()
-            if ($Text) {
-                Write-EntryLog ("CONFIGURE: " + $Text)
+    $ExitCode = $Process.ExitCode
+
+    foreach ($Capture in @(
+        @{ Path = $ChildStdOut; Prefix = "CONFIGURE OUT" },
+        @{ Path = $ChildStdErr; Prefix = "CONFIGURE ERR" }
+    )) {
+        if (Test-Path -LiteralPath $Capture.Path) {
+            foreach ($OutputLine in Get-Content -LiteralPath $Capture.Path -ErrorAction SilentlyContinue) {
+                $Text = [string]$OutputLine
+                if (-not [string]::IsNullOrWhiteSpace($Text)) {
+                    Write-EntryLog ($Capture.Prefix + ": " + $Text)
+                }
             }
         }
     }
@@ -96,7 +114,7 @@ try {
     }
 
     try {
-        Grant-LocalSystemDataAccess
+        Grant-InstallerDataAccess
     }
     catch {
         Write-EntryLog ("ACL FINAL WARNING: " + $_.Exception.Message)
