@@ -45,7 +45,7 @@ WHERE p.empresa_id = c.empresa_id
   AND p.sku = c.sku
   AND c.unidad_venta IS DISTINCT FROM p.unidad_manejo;
 
-DO $
+DO $$
 BEGIN
   IF to_regclass('public.pos_mayoreo_menudeo') IS NOT NULL THEN
     UPDATE public.pos_mayoreo_menudeo m
@@ -56,7 +56,7 @@ BEGIN
       AND p.sku = m.sku
       AND m.unidad IS DISTINCT FROM p.unidad_manejo;
   END IF;
-END $;
+END $$;
 
 ALTER TABLE public.producto
   ALTER COLUMN unidad_manejo SET DEFAULT 'pieza',
