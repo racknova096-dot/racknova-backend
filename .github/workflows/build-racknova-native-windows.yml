@@ -452,6 +452,7 @@ jobs:
             --collect-all bcrypt `
             --add-data "001_multiempresa_fase1.sql;." `
             --add-data "002_multiempresa_fase2_local_first.sql;." `
+            --add-data "003_unidad_manejo.sql;." `
             native/windows/racknova_ctl.py
 
           if (-not (Test-Path "dist/RackNovaCtl.exe")) {
