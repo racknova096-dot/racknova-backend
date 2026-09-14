@@ -179,8 +179,8 @@ async def medir_tiempo_solicitud(request, call_next):
 
     if duracion_ms >= SLOW_REQUEST_MS:
         print(
-            f"⚠️ Solicitud lenta: {request.method} {request.url.path} "
-            f"→ {duracion_ms:.2f} ms"
+            f"[WARN] Solicitud lenta: {request.method} {request.url.path} "
+            f"-> {duracion_ms:.2f} ms"
         )
 
     return response
@@ -477,7 +477,7 @@ def obtener_columnas(session: Session, tabla: str) -> List[str]:
         return [str(row[0]).lower() for row in result]
 
     except Exception as e:
-        print(f"⚠️ No se pudieron leer columnas de {tabla}: {e}")
+        print(f"[WARN] No se pudieron leer columnas de {tabla}: {e}")
         return []
 
 
@@ -498,11 +498,11 @@ def agregar_columna_si_falta(
             )
 
             session.commit()
-            print(f"✅ Columna {tabla}.{columna} agregada")
+            print(f"[OK] Columna {tabla}.{columna} agregada")
 
         except Exception as e:
             session.rollback()
-            print(f"⚠️ No se pudo agregar {tabla}.{columna}: {e}")
+            print(f"[WARN] No se pudo agregar {tabla}.{columna}: {e}")
 
 
 def modificar_columna_si_existe(
@@ -521,7 +521,7 @@ def modificar_columna_si_existe(
 
         if es_postgres():
             print(
-                f"ℹ️ PostgreSQL detectado. "
+                f"[INFO] PostgreSQL detectado. "
                 f"Se omite MODIFY COLUMN en {tabla}.{columna}."
             )
             return
@@ -531,11 +531,11 @@ def modificar_columna_si_existe(
         )
 
         session.commit()
-        print(f"✅ Columna {tabla}.{columna} ajustada")
+        print(f"[OK] Columna {tabla}.{columna} ajustada")
 
     except Exception as e:
         session.rollback()
-        print(f"⚠️ No se pudo ajustar {tabla}.{columna}: {e}")
+        print(f"[WARN] No se pudo ajustar {tabla}.{columna}: {e}")
 
 
 
@@ -574,7 +574,7 @@ def indice_existe(
 
         return row is not None
     except Exception as exc:
-        print(f"⚠️ No se pudo consultar el índice {indice}: {exc}")
+        print(f"[WARN] No se pudo consultar el índice {indice}: {exc}")
         return False
 
 
@@ -606,10 +606,10 @@ def crear_indice_si_falta(
             )
         )
         session.commit()
-        print(f"✅ Índice creado: {indice}")
+        print(f"[OK] Índice creado: {indice}")
     except Exception as exc:
         session.rollback()
-        print(f"⚠️ No se pudo crear {indice}: {exc}")
+        print(f"[WARN] No se pudo crear {indice}: {exc}")
 
 
 def crear_indices_rendimiento() -> None:
@@ -935,7 +935,7 @@ def crear_admin_inicial():
         session.add(admin)
         session.commit()
 
-        print("✅ Usuario administrador inicial creado: admin@racknova.com")
+        print("[OK] Usuario administrador inicial creado: admin@racknova.com")
 
 
 # ==========================================================
@@ -954,10 +954,10 @@ def on_startup():
         crear_indices_rendimiento()
         crear_admin_inicial()
 
-        print("✅ Database tables created/updated successfully")
+        print("[OK] Database tables created/updated successfully")
 
     except Exception as e:
-        print(f"❌ ERROR creating/updating tables: {e}")
+        print(f"[ERROR] creating/updating tables: {e}")
         sys.exit(1)
 
 
@@ -3003,7 +3003,7 @@ def check_db(session: SessionDep):
         }
 
     except Exception as e:
-        print(f"❌ Database check error: {e}")
+        print(f"[ERROR] Database check error: {e}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
@@ -3227,7 +3227,7 @@ def analizar_inventario_con_ia(
         ) from error
 
     except Exception as error:
-        print("❌ Error en RackNova IA v2:", str(error))
+        print("[ERROR] Error en RackNova IA v2:", str(error))
 
         raise HTTPException(
             status_code=500,
@@ -3468,7 +3468,7 @@ def crear_producto(
         raise
 
     except Exception as e:
-        print(f"❌ Create/restock product error: {e}")
+        print(f"[ERROR] Create/restock product error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -3563,7 +3563,7 @@ def update_producto(
         raise
 
     except Exception as e:
-        print(f"❌ Update product error: {e}")
+        print(f"[ERROR] Update product error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -3602,7 +3602,7 @@ def eliminar_producto_por_sku(
         raise
 
     except Exception as e:
-        print(f"❌ Delete product error: {e}")
+        print(f"[ERROR] Delete product error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -3680,7 +3680,7 @@ def registrar_salida_producto(
         raise
 
     except Exception as e:
-        print(f"❌ Error registrando salida financiera: {e}")
+        print(f"[ERROR] Error registrando salida financiera: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
