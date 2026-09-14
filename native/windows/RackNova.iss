@@ -145,7 +145,7 @@ begin
     CloudConfigPage.Add('URL de RackNova Cloud:', False);
     CloudConfigPage.Values[0] := 'https://racknova-backend-1.onrender.com';
     CloudConfigPage.Add('ID de empresa:', False);
-    CloudConfigPage.Values[1] := '11111111-1111-4111-8111-111111111111';
+    CloudConfigPage.Values[1] := '';
     CloudConfigPage.Add('Sync Secret de RackNova:', True);
     CloudConfigPage.Values[2] := '';
   end;
@@ -358,6 +358,7 @@ procedure RunCloudActivation(
   InstallDir: String;
   CloudUrl: String;
   EmpresaId: String;
+  AllowTenantBootstrap: Boolean;
   var ResultCode: Integer
 );
 var
@@ -374,6 +375,9 @@ begin
     '" -Mode Activate -InstallDir "' + InstallDir +
     '" -CloudUrl "' + CloudUrl +
     '" -EmpresaId "' + EmpresaId + '"';
+
+  if AllowTenantBootstrap then
+    Args := Args + ' -AllowTenantBootstrap';
 
   if not Exec(
     PowerShellExe,
@@ -491,6 +495,7 @@ begin
           InstallDir,
           CloudUrl,
           EmpresaId,
+          ShouldBootstrapCloud(),
           ResultCode
         );
       finally
