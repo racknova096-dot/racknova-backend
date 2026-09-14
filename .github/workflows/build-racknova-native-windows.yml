@@ -1,4 +1,5 @@
 name: Build RackNova Native Windows F1
+# Diagnostic branch rerun after silent Cloud fix
 
 on:
   workflow_dispatch:
