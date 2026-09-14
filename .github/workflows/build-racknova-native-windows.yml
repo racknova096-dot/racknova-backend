@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - diagnose/local-installer-20260914
 
 permissions:
   contents: read
@@ -499,10 +500,10 @@ jobs:
             Out-String |
             Set-Content "output/SHA256.txt"
 
-      - name: Smoke-test clean install and F1.8 repair path
+      - name: Smoke-test current Local installer with bounded diagnostics
         working-directory: native/windows
         shell: pwsh
-        timeout-minutes: 10
+        timeout-minutes: 16
         run: |
           $ErrorActionPreference = "Stop"
           $setup = (Resolve-Path "output/RackNova_Setup_Native_F1_9.exe").Path
@@ -510,43 +511,97 @@ jobs:
           $pgRoot = Join-Path $env:ProgramData "RackNova\PostgreSQL"
           $pgInstall = Join-Path $installDir "PostgreSQL"
 
-          function Invoke-Setup {
+          function Show-RackNovaDiagnostics([string]$Label, [string]$InnoLog) {
+            Write-Host ""
+            Write-Host "===== DIAGNOSTICO: $Label ====="
+
+            if (Test-Path -LiteralPath $InnoLog) {
+              Write-Host "----- Inno Setup tail -----"
+              Get-Content -LiteralPath $InnoLog -Tail 30 -ErrorAction SilentlyContinue
+            }
+
+            $rackLogs = Join-Path $env:ProgramData "RackNova\Logs"
+            if (Test-Path -LiteralPath $rackLogs) {
+              Get-ChildItem -LiteralPath $rackLogs -File -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTimeUtc -Descending |
+                Select-Object -First 4 |
+                ForEach-Object {
+                  Write-Host "----- $($_.Name) tail -----"
+                  Get-Content -LiteralPath $_.FullName -Tail 25 -ErrorAction SilentlyContinue
+                }
+            }
+
+            Write-Host "----- Procesos relevantes -----"
+            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+              Where-Object {
+                $_.Name -match "RackNova|setup|powershell|postgres|pg_ctl|initdb" -or
+                ($_.CommandLine -and $_.CommandLine -match "RackNova|configure_install")
+              } |
+              Select-Object ProcessId, ParentProcessId, Name, CommandLine |
+              Format-Table -Wrap -AutoSize |
+              Out-String |
+              Write-Host
+
+            Write-Host "----- Servicios -----"
+            Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -in @("RackNovaLocal","RackNovaPostgreSQL16") } |
+              Select-Object Name, State, StartName, PathName |
+              Format-Table -AutoSize |
+              Out-String |
+              Write-Host
+          }
+
+          function Invoke-Setup([string]$Label) {
+            $safeLabel = $Label -replace "[^A-Za-z0-9_-]", "-"
+            $innoLog = Join-Path $env:RUNNER_TEMP ("racknova-" + $safeLabel + ".log")
+            Remove-Item -LiteralPath $innoLog -Force -ErrorAction SilentlyContinue
+
+            Write-Host "=== Ejecutando Setup: $Label ==="
             $proc = Start-Process `
               -FilePath $setup `
               -ArgumentList @(
                 "/VERYSILENT",
                 "/SUPPRESSMSGBOXES",
                 "/NORESTART",
-                "/SP-"
+                "/SP-",
+                ("/LOG=`"" + $innoLog + "`"")
               ) `
-              -PassThru `
-              -Wait
+              -PassThru
 
-            if ($proc.ExitCode -ne 0) {
-              Get-ChildItem "$env:ProgramData\RackNova\Logs" -ErrorAction SilentlyContinue |
-                Sort-Object LastWriteTime -Descending |
-                Select-Object -First 3 |
-                ForEach-Object {
-                  Write-Host "===== $($_.FullName) ====="
-                  Get-Content $_.FullName -ErrorAction SilentlyContinue
-                }
-              throw "RackNova Setup terminó con código $($proc.ExitCode)."
+            $deadline = (Get-Date).AddSeconds(420)
+            $nextDiag = (Get-Date).AddSeconds(30)
+
+            while ($true) {
+              Start-Sleep -Seconds 5
+              $proc.Refresh()
+
+              if ($proc.HasExited) {
+                break
+              }
+
+              if ((Get-Date) -ge $nextDiag) {
+                Show-RackNovaDiagnostics -Label ($Label + " en ejecución") -InnoLog $innoLog
+                $nextDiag = (Get-Date).AddSeconds(30)
+              }
+
+              if ((Get-Date) -ge $deadline) {
+                Show-RackNovaDiagnostics -Label ($Label + " TIMEOUT") -InnoLog $innoLog
+                try { & taskkill.exe /PID $proc.Id /T /F | Out-Host } catch {}
+                throw "RackNova Setup excedió 420 segundos en '$Label'."
+              }
+            }
+
+            $exitCode = $proc.ExitCode
+            Show-RackNovaDiagnostics -Label ($Label + " terminado código " + $exitCode) -InnoLog $innoLog
+
+            if ($exitCode -ne 0) {
+              throw "RackNova Setup terminó con código $exitCode en '$Label'."
             }
           }
 
           function Assert-RackNovaHealthy {
             $pg = Get-CimInstance Win32_Service -Filter "Name='RackNovaPostgreSQL16'"
-            if (-not $pg) {
-              Write-Host "=== DIAGNOSTICO POST-INSTALL ==="
-              Get-ChildItem "$env:ProgramData\RackNova\Logs" -ErrorAction SilentlyContinue |
-                Sort-Object LastWriteTime -Descending |
-                Select-Object -First 8 |
-                ForEach-Object {
-                  Write-Host "===== $($_.FullName) ====="
-                  Get-Content $_.FullName -ErrorAction SilentlyContinue
-                }
-              throw "No existe RackNovaPostgreSQL16 después de instalar."
-            }
+            if (-not $pg) { throw "No existe RackNovaPostgreSQL16 después de instalar." }
             if ($pg.State -ne "Running") {
               throw "RackNovaPostgreSQL16 no está Running: $($pg.State)"
             }
@@ -570,25 +625,25 @@ jobs:
           }
 
           Write-Host "=== Smoke test: instalación limpia ==="
-          Invoke-Setup
+          Invoke-Setup -Label "clean"
           Assert-RackNovaHealthy
 
-          Write-Host "=== Smoke test: simular servicio F1.8 con LocalSystem y ACL dañada ==="
+          Write-Host "=== Smoke test: reparar LocalSystem con ACL dañada ==="
           Stop-Service RackNovaLocal -Force -ErrorAction SilentlyContinue
           Stop-Service RackNovaPostgreSQL16 -Force -ErrorAction Stop
 
           & sc.exe config RackNovaPostgreSQL16 obj= LocalSystem start= auto | Out-Null
           if ($LASTEXITCODE -ne 0) {
-            throw "No pude simular la cuenta LocalSystem de F1.8."
+            throw "No pude preparar la simulación LocalSystem."
           }
 
           & icacls.exe $pgRoot /remove:g "*S-1-5-18" /T /C | Out-Null
           & icacls.exe $pgInstall /remove:g "*S-1-5-18" /T /C | Out-Null
 
-          Invoke-Setup
+          Invoke-Setup -Label "repair-acl"
           Assert-RackNovaHealthy
 
-          Write-Host "Instalación limpia y reparación F1.8 verificadas."
+          Write-Host "Instalación limpia y reparación ACL verificadas."
 
           $uninstaller = Join-Path $installDir "unins000.exe"
           if (Test-Path $uninstaller) {
@@ -597,6 +652,45 @@ jobs:
               -ArgumentList @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART") `
               -Wait
           }
+
+      - name: Collect installer smoke diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          $dest = "_smoke_diagnostics"
+          New-Item -ItemType Directory -Force $dest | Out-Null
+
+          Get-ChildItem $env:RUNNER_TEMP -Filter "racknova-*.log" -File -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $dest -Force
+
+          $rackLogs = Join-Path $env:ProgramData "RackNova\Logs"
+          if (Test-Path -LiteralPath $rackLogs) {
+            Copy-Item $rackLogs (Join-Path $dest "RackNova-Logs") -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+          Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+              $_.Name -match "RackNova|setup|powershell|postgres|pg_ctl|initdb" -or
+              ($_.CommandLine -and $_.CommandLine -match "RackNova|configure_install")
+            } |
+            Select-Object ProcessId, ParentProcessId, Name, CommandLine |
+            Format-List |
+            Out-File (Join-Path $dest "processes.txt")
+
+          Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -in @("RackNovaLocal","RackNovaPostgreSQL16") } |
+            Select-Object Name, State, StartName, PathName |
+            Format-List |
+            Out-File (Join-Path $dest "services.txt")
+
+      - name: Upload installer smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: RackNova-Current-Installer-Smoke-Diagnostics
+          path: _smoke_diagnostics
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload native setup
         uses: actions/upload-artifact@v6
