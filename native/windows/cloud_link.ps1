@@ -11,7 +11,8 @@ param(
     [string]$NodeCode = "",
     [string]$NodeName = "",
     [int]$SyncInterval = 15,
-    [switch]$AllowTenantBootstrap
+    [switch]$AllowTenantBootstrap,
+    [string]$SecretFile = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -294,11 +295,37 @@ if ($Mode -eq "Restore") {
 }
 
 if ($Mode -eq "Activate") {
-    $Secret = ([string]$env:RACKNOVA_INSTALL_SYNC_SECRET).Trim()
+    $SecretSource = "environment"
+    $Secret = ""
+
+    if ($SecretFile) {
+        $SecretSource = "protected-temp-file"
+        try {
+            if (-not (Test-Path -LiteralPath $SecretFile)) {
+                throw "El archivo temporal de credencial no existe."
+            }
+            $Secret = (
+                Get-Content -LiteralPath $SecretFile -Raw -ErrorAction Stop
+            ).Trim()
+        }
+        finally {
+            Remove-Item -LiteralPath $SecretFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+    else {
+        $Secret = ([string]$env:RACKNOVA_INSTALL_SYNC_SECRET).Trim()
+    }
+
     $CloudUrl = ([string]$CloudUrl).Trim().TrimEnd("/")
     $EmpresaId = ([string]$EmpresaId).Trim()
 
+    Write-CloudLog (
+        "Inicio de activación Cloud. secret_source=$SecretSource " +
+        "secret_length=$($Secret.Length) empresa=$EmpresaId url=$CloudUrl"
+    )
+
     if (-not $CloudUrl) {
+        Write-CloudLog "ERROR: RackNova Cloud URL es obligatoria."
         throw "RackNova Cloud URL es obligatoria."
     }
     if (-not $CloudUrl.StartsWith("https://") -and
@@ -307,6 +334,10 @@ if ($Mode -eq "Activate") {
         throw "RackNova Cloud debe usar HTTPS."
     }
     if ($Secret.Length -lt 20) {
+        Write-CloudLog (
+            "ERROR: la credencial recibida tiene longitud $($Secret.Length); " +
+            "se requieren al menos 20 caracteres."
+        )
         throw "La credencial RackNova Sync debe tener al menos 20 caracteres."
     }
 
