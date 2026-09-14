@@ -75,14 +75,17 @@ try {
     $ChildStdErr = Join-Path $LogDir ("configure-stderr-" + $ChildStamp + ".log")
     $PowerShellExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
 
+    $QuotedOriginal = '"' + $Original + '"'
+    $QuotedInstallDir = '"' + $InstallDir + '"'
+
     $Process = Start-Process `
         -FilePath $PowerShellExe `
         -ArgumentList @(
             "-NoProfile",
             "-NonInteractive",
             "-ExecutionPolicy", "Bypass",
-            "-File", ("\"" + $Original + "\""),
-            "-InstallDir", ("\"" + $InstallDir + "\"")
+            "-File", $QuotedOriginal,
+            "-InstallDir", $QuotedInstallDir
         ) `
         -RedirectStandardOutput $ChildStdOut `
         -RedirectStandardError $ChildStdErr `
