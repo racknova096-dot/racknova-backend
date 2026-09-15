@@ -121,10 +121,8 @@ function Ensure-SequencesFromCreateSql([string]$CreateSql) {
         return
     }
 
-    $Matches = [regex]::Matches(
-        $CreateSql,
-        "nextval\('([^']+)'::regclass\)"
-    )
+    $Pattern = "nextval\('([^']+)'::regclass\)"
+    $Matches = [System.Text.RegularExpressions.Regex]::Matches($CreateSql, $Pattern)
 
     foreach ($Match in $Matches) {
         $SequenceName = [string]$Match.Groups[1].Value
@@ -249,9 +247,9 @@ try {
             }
         }
 
-        # Defensa adicional para snapshots generados por versiones Cloud previas:
-        # si create_sql referencia nextval(...::regclass), la secuencia debe
-        # existir antes del CREATE TABLE.
+        # Compatibilidad defensiva con snapshots Cloud que omitan pre_sql.
+        # Toda secuencia usada por DEFAULT nextval(...::regclass) debe existir
+        # antes de crear la tabla.
         Ensure-SequencesFromCreateSql -CreateSql ([string]$Item.schema.create_sql)
 
         Invoke-PsqlScript -Sql ([string]$Item.schema.create_sql) | Out-Null
@@ -534,7 +532,6 @@ finally {
         Invoke-PsqlScript -Sql $SequenceSql | Out-Null
     }
 }
-
 function Insert-JsonRows {
     param(
         [Parameter(Mandatory=$true)]
