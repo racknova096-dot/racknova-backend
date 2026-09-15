@@ -69,6 +69,10 @@ jobs:
           $scripts = @(
             "native/windows/configure_install.ps1",
             "native/windows/configure_install_entry.ps1",
+            "native/windows/cloud_link.ps1",
+            "native/windows/recover_legacy_cloud_link.ps1",
+            "native/windows/reset_definitive.ps1",
+            "native/windows/bootstrap_cloud_snapshot.ps1",
             "native/windows/uninstall_runtime.ps1"
           )
 
