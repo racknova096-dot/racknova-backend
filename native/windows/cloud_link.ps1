@@ -16,6 +16,20 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Windows PowerShell 5.1 no siempre carga System.Security antes de usar DPAPI.
+# RackNova protege secretos con ProtectedData/LocalMachine, así que cargamos
+# explícitamente el ensamblado antes de cualquier lectura o escritura.
+try {
+    Add-Type -AssemblyName System.Security -ErrorAction Stop
+}
+catch {
+    throw (
+        "No pude cargar System.Security para proteger las credenciales de RackNova: " +
+        $_.Exception.Message
+    )
+}
+
 $ProgressPreference = "SilentlyContinue"
 
 $ProgramDataRoot = Join-Path $env:ProgramData "RackNova"
