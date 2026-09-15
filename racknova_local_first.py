@@ -183,7 +183,7 @@ def _table_schema_bundle(session: Session, table: str) -> dict[str, Any]:
             definition += f" GENERATED ALWAYS AS ({default_sql}) STORED"
         elif default_sql:
             match = re.search(
-                r"nextval\\('([^']+)'::regclass\\)",
+                r"nextval\('([^']+)'::regclass\)",
                 default_sql,
             )
             if match:
