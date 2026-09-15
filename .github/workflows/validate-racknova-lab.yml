@@ -1,0 +1,49 @@
+name: Validate RackNova Lab
+
+on:
+  push:
+    branches:
+      - develop
+    paths:
+      - "scripts/*.ps1"
+      - ".github/workflows/validate-racknova-lab.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout develop
+        uses: actions/checkout@v5
+
+      - name: Validate PowerShell syntax
+        shell: pwsh
+        run: |
+          $scripts = @(
+            "scripts/start-dev-zero-cost.ps1",
+            "scripts/stop-dev-zero-cost.ps1",
+            "scripts/RackNovaLab.ps1"
+          )
+
+          foreach ($script in $scripts) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script).Path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+
+            if ($errors.Count -gt 0) {
+              $details = ($errors | ForEach-Object {
+                "$($_.Extent.StartLineNumber):$($_.Message)"
+              }) -join " | "
+              throw "PowerShell inválido en ${script}: $details"
+            }
+
+            Write-Host "OK: $script"
+          }
