@@ -111,18 +111,19 @@ if ($DbExists -ne "1") {
     }
 }
 
-$Python = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+$VenvRoot = Join-Path $DevRoot ".venv"
+$Python = Join-Path $VenvRoot "Scripts\python.exe"
 if (-not (Test-Path $Python)) {
     $Py = Get-Command py.exe -ErrorAction SilentlyContinue
     if ($Py) {
-        & $Py.Source -3 -m venv (Join-Path $RepoRoot ".venv")
+        & $Py.Source -3 -m venv $VenvRoot
     }
     else {
         $SystemPython = Get-Command python.exe -ErrorAction SilentlyContinue
         if (-not $SystemPython) {
             throw "No encontré Python. Instala Python 3 o crea .venv manualmente."
         }
-        & $SystemPython.Source -m venv (Join-Path $RepoRoot ".venv")
+        & $SystemPython.Source -m venv $VenvRoot
     }
 
     if ($LASTEXITCODE -ne 0) {
