@@ -926,7 +926,7 @@ def crear_admin_inicial():
             usuario="admin@racknova.com",
             nombre="Administrador RackNova",
             rol="admin",
-            password_hash=hash_password("admin123"),
+            password_hash=hash_password(os.getenv("RACKNOVA_DEV_ADMIN_PASSWORD", "admin123")),
             activo=True,
             fecha_creacion=mexico_now(),
             ultima_actualizacion=mexico_now(),
