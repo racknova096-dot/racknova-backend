@@ -118,6 +118,13 @@ if (-not $ApiReady) {
     throw "El backend no respondió en http://127.0.0.1:8010 después de 3 minutos."
 }
 
+$DevSecretsFile = Join-Path $DevRoot "dev-secrets.ps1"
+$LabAdminPassword = ""
+if (Test-Path $DevSecretsFile) {
+    . $DevSecretsFile
+    $LabAdminPassword = [string]$RackNovaDevWebAdminPassword
+}
+
 Write-Host "3/5 Preparando conexión segura temporal..."
 if (-not (Test-Path $Cloudflared)) {
     Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile $Cloudflared
@@ -174,7 +181,7 @@ Write-Host "Base DEV: PostgreSQL local puerto 54339 / racknova_dev"
 Write-Host "Cloud de producción: NO CONECTADO"
 Write-Host ""
 Write-Host "Usuario inicial: admin@racknova.com"
-Write-Host "Password inicial: admin123"
+Write-Host "Password inicial: $LabAdminPassword"
 Write-Host ""
 Write-Host "Para apagar el laboratorio:"
 Write-Host "powershell -ExecutionPolicy Bypass -File .\RackNovaLab.ps1 -Stop"
