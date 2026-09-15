@@ -43,11 +43,13 @@ $Psql = Join-Path $PgBin "psql.exe"
 if (-not (Test-Path $SecretsFile)) {
     $AdminPassword = New-LocalPassword
     $AppPassword = New-LocalPassword
+    $WebAdminPassword = New-LocalPassword
     $SecretContent = @(
         "# Credenciales SOLO para el entorno local de desarrollo RackNova.",
         "# No subir este archivo a Git.",
         ('$RackNovaDevAdminPassword = ''' + $AdminPassword + ''''),
-        ('$RackNovaDevAppPassword = ''' + $AppPassword + '''')
+        ('$RackNovaDevAppPassword = ''' + $AppPassword + ''''),
+        ('$RackNovaDevWebAdminPassword = ''' + $WebAdminPassword + '''')
     )
     $SecretContent | Set-Content -LiteralPath $SecretsFile -Encoding UTF8
 }
@@ -56,6 +58,11 @@ if (-not (Test-Path $SecretsFile)) {
 
 if (-not $RackNovaDevAdminPassword -or -not $RackNovaDevAppPassword) {
     throw "El archivo de credenciales de desarrollo está incompleto: $SecretsFile"
+}
+
+if (-not $RackNovaDevWebAdminPassword) {
+    $RackNovaDevWebAdminPassword = New-LocalPassword
+    Add-Content -LiteralPath $SecretsFile -Value ('$RackNovaDevWebAdminPassword = ''' + $RackNovaDevWebAdminPassword + '''')
 }
 
 if (-not (Test-Path (Join-Path $PgData "PG_VERSION"))) {
@@ -147,6 +154,7 @@ $env:RACKNOVA_SYNC_AUTOSTART = "false"
 $env:RACKNOVA_SYNC_SECRET = ""
 $env:RACKNOVA_CLOUD_URL = ""
 $env:SECRET_KEY = "racknova-local-development-only"
+$env:RACKNOVA_DEV_ADMIN_PASSWORD = $RackNovaDevWebAdminPassword
 
 Push-Location $RepoRoot
 try {
@@ -182,7 +190,7 @@ try {
     Write-Host "PostgreSQL: 127.0.0.1:$PostgresPort / racknova_dev"
     Write-Host "Sync Cloud: DESACTIVADO"
     Write-Host "Usuario:    admin@racknova.com"
-    Write-Host "Password:   admin123"
+    Write-Host "Password:   $RackNovaDevWebAdminPassword"
     Write-Host ""
     Write-Host "Este entorno es independiente de producción."
     Write-Host "Ctrl+C detiene la API."
